@@ -31,7 +31,7 @@ permissions:
 jobs:
   prepare:
     if: >-
-      github.repository == 'torchtitan-npu/torchtitan-npu' &&
+      github.repository == 'cann-framework/torchtitan-npu' &&
       ((github.event_name == 'pull_request' && github.base_ref == 'master') ||
        (github.event_name == 'workflow_dispatch' &&
         (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/ci/'))))
