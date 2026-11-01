@@ -17,14 +17,14 @@ on:
         type: string
         default: ""
       default_worker:
+        required: true
         type: string
-        default: blue
       default_target_pool:
+        required: true
         type: string
-        default: a3_shared_blue
       default_docker:
+        required: true
         type: string
-        default: cann_master_torchtitan_master_xyj
 permissions:
   contents: read
   actions: read

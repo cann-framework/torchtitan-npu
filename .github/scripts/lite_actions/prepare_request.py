@@ -4,25 +4,15 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Trusted CPU-only workflow -> Matrix and source-SHA-bound Artifact.
-
-GitHub prepares one immutable, SHA-bound case plan. The dispatcher owns training.
-"""
+"""CPU-only workflow -> Matrix and source-SHA-bound Artifact."""
 
 from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 
-TEST = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
-SHA = re.compile(r"[0-9a-f]{40}\Z")
-# Only the upstream organization may publish CI plans or consume results.
-REPO = "cann-framework/torchtitan-npu"
-if (source := os.environ.get("GITHUB_REPOSITORY", REPO)) != REPO:
-    raise ValueError("untrusted GitHub CI repository")
-PIPELINES = {"a3-8p", "a3-16p", "a5-64p"}
+from tests.integration_tests.tools.lite_actions.contract import REPO, TEST, create_plan, normalize
 
 
 def parse_cases(value: str) -> list[dict]:
@@ -40,10 +30,7 @@ def parse_cases(value: str) -> list[dict]:
     return cases
 
 
-from tests.integration_tests.tools.lite_actions.contract import create_plan, normalize
-
-
-def expand_cases(selectors, defaults):
+def expand_cases(selectors: list[dict], defaults: dict) -> list[dict]:
     from tests.integration_tests.tools.lite_actions.entrypoint import catalog, select
 
     catalogue = catalog()
@@ -58,7 +45,9 @@ def expand_cases(selectors, defaults):
     return expanded
 
 
-def main():
+def main() -> None:
+    if os.environ["GITHUB_REPOSITORY"] != REPO:
+        raise ValueError("untrusted GitHub CI repository")
     defaults = {k: os.environ["CI_DEFAULT_" + k.upper()] for k in ("worker", "target_pool", "docker")}
     cases = expand_cases(parse_cases(os.environ["CI_TEST_CASES"]), defaults)
     plan = create_plan(
@@ -72,10 +61,12 @@ def main():
     )
     out = Path(".ci-request")
     out.mkdir(exist_ok=True)
-    (out / "ci-request.json").write_text(json.dumps(plan, ensure_ascii=False, separators=(",", ":")) + "\n")
-    with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-        f.write("matrix=" + json.dumps({"include": cases}, ensure_ascii=False, separators=(",", ":")) + "\n")
-        f.write("plan_digest=" + plan["plan_digest"] + "\n")
+    (out / "ci-request.json").write_text(
+        json.dumps(plan, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+        handle.write("matrix=" + json.dumps({"include": cases}, ensure_ascii=False, separators=(",", ":")) + "\n")
+        handle.write("plan_digest=" + plan["plan_digest"] + "\n")
 
 
 if __name__ == "__main__":

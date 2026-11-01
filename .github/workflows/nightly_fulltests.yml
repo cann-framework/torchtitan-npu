@@ -21,7 +21,7 @@ jobs:
     uses: ./.github/workflows/lite_actions_common.yml
     with:
       workflow: nightly_fulltests.yml
-      default_cases: '[{"suite":"a3_8p_tests"}]'
+      default_cases: '[{"suite":"a3_8p_tests"},{"suite":"a3_16p_tests"}]'
       test_cases: ${{ inputs.test_cases }}
       default_worker: blue
       default_target_pool: a3_shared_blue
