@@ -19,7 +19,7 @@ from pathlib import Path
 TEST = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 # Only the upstream organization may publish CI plans or consume results.
-REPO = "torchtitan-npu/torchtitan-npu"
+REPO = "cann-framework/torchtitan-npu"
 if (source := os.environ.get("GITHUB_REPOSITORY", REPO)) != REPO:
     raise ValueError("untrusted GitHub CI repository")
 PIPELINES = {"a3-8p", "a3-16p", "a5-64p"}

@@ -22,7 +22,7 @@ class InputsArtifactTests(unittest.TestCase):
         super().setUpClass()
         spec = importlib.util.spec_from_file_location('prepare_ci_request', SCRIPT)
         cls.prepare = importlib.util.module_from_spec(spec)
-        with patch.dict(os.environ, {'GITHUB_REPOSITORY':'torchtitan-npu/torchtitan-npu'}):
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY':'cann-framework/torchtitan-npu'}):
             spec.loader.exec_module(cls.prepare)
 
     def test_valid_multiple_cases(self):
@@ -45,7 +45,7 @@ class InputsArtifactTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             env = {'CI_TEST_CASES': json.dumps([CASE]), 'GITHUB_RUN_ID': '101',
                    'GITHUB_RUN_ATTEMPT': '2', 'GITHUB_SHA': 'a'*40,
-                   'GITHUB_REPOSITORY': 'torchtitan-npu/torchtitan-npu',
+                   'GITHUB_REPOSITORY': 'cann-framework/torchtitan-npu',
                    'CI_WORKFLOW': 'nightly_fulltests.yml',
                    'CI_SOURCE_SHA': 'a'*40,
                    'CI_DEFAULT_WORKER': 'blue',

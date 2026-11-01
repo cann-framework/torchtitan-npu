@@ -256,7 +256,7 @@ python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite
 为了保证内网物理 NPU 集群的执行安全，防止恶意 PR 注入未经审查的代码，CI 调度实行**受控安全准入**机制：
 
 ### 3.1 组织仓 PR 自动 CI 触发
-1. **自动触发**：所有面向 `torchtitan-npu/torchtitan-npu:master` 提交的 PR（含来自外部 Fork 仓库的 PR）会自动触发组织仓的 GitHub Actions 工作流；
+1. **自动触发**：所有面向 `cann-framework/torchtitan-npu:master` 提交的 PR（含来自外部 Fork 仓库的 PR）会自动触发组织仓的 GitHub Actions 工作流；
 2. **安全防护**：
    - 外部 Fork 的首次 PR 受 GitHub 官方的 Workflow 审批策略保护（需要 Maintainer 批准运行）；
    - 调度机根据 PR API 严格比对 PR 编号、目标分支以及精确的 Head Commit SHA，坚决拒绝过期或关联异常的 Run；
@@ -268,11 +268,11 @@ python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite
 
 ```bash
 # 执行 A3 8P 全部用例（Muon + AdamW 独立 Matrix Case，资源不重叠即可并发）
-gh workflow run nightly_fulltests.yml -R torchtitan-npu/torchtitan-npu --ref master \
+gh workflow run nightly_fulltests.yml -R cann-framework/torchtitan-npu --ref master \
   -f 'test_cases=[{"suite":"a3_8p_tests"}]'
 
 # 仅执行指定 16P 用例
-gh workflow run nightly_fulltests.yml -R torchtitan-npu/torchtitan-npu --ref master \
+gh workflow run nightly_fulltests.yml -R cann-framework/torchtitan-npu --ref master \
   -f 'test_cases=[{"test_id":"dsv4_flash_a3_16p_example"}]'
 ```
 

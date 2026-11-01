@@ -64,7 +64,7 @@ class CIContract(unittest.TestCase):
                     CI_TEST_CASES='[{"suite":"a3_8p_tests"}]',
                     CI_WORKFLOW="nightly_fulltests.yml",
                     CI_SOURCE_SHA="a" * 40,
-                    GITHUB_REPOSITORY="torchtitan-npu/torchtitan-npu",
+                    GITHUB_REPOSITORY="cann-framework/torchtitan-npu",
                     GITHUB_RUN_ID="7",
                     GITHUB_RUN_ATTEMPT="2",
                     GITHUB_OUTPUT=td + "/output",
@@ -84,7 +84,7 @@ class CIContract(unittest.TestCase):
         item = self.cases()[0]
         expected = dict(
             schema=3,
-            repo="torchtitan-npu/torchtitan-npu",
+            repo="cann-framework/torchtitan-npu",
             workflow="nightly_fulltests.yml",
             run_id=7,
             attempt=2,
@@ -168,7 +168,7 @@ class CIContract(unittest.TestCase):
     def test_partial_rerun_requires_current_attempt_artifact(self):
         result, args, _ = self.result_fixture()
         env = dict(
-            GITHUB_REPOSITORY="torchtitan-npu/torchtitan-npu",
+            GITHUB_REPOSITORY="cann-framework/torchtitan-npu",
             CI_RESULT_AUTHOR="reporter",
             CI_CASE=json.dumps(args["item"]),
             GITHUB_RUN_ID="7",

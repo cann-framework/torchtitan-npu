@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 
-REPO = "torchtitan-npu/torchtitan-npu"
+REPO = "cann-framework/torchtitan-npu"
 WORKFLOWS = {"nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"}
 WORKERS = {"blue", "yellow"}
 TEST = re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
