@@ -4,16 +4,17 @@
 # LICENSE file in the root directory of this source tree.
 
 """Model-owned launch and verification; resource leases remain in Lite Actions."""
+
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import socket
 import subprocess
 import sys
+from pathlib import Path
 
 from tests.integration_tests import OverrideDefinitions
 from tests.integration_tests.tools.lite_actions.contract import execution_timeout
@@ -22,15 +23,16 @@ from tests.integration_tests.tools.lite_actions.contract import execution_timeou
 def dispatcher_port_env() -> dict[str, str]:
     """Apply dispatcher-issued (or explicitly supplied manual) rendezvous ports."""
     overrides = {}
-    for key, target in (("LITE_CI_MASTER_PORT", "MASTER_PORT"),
-                        ("LITE_CI_HCCL_IF_BASE_PORT", "HCCL_IF_BASE_PORT")):
+    for key, target in (("LITE_CI_MASTER_PORT", "MASTER_PORT"), ("LITE_CI_HCCL_IF_BASE_PORT", "HCCL_IF_BASE_PORT")):
         raw = os.environ.get(key)
         if raw is not None:
             if not raw.isascii() or not raw.isdecimal() or not 1024 <= int(raw) <= 65535:
                 raise ValueError(f"invalid dispatcher-issued {key}")
             overrides[target] = raw
-    for key, target in (("LITE_CI_HCCL_HOST_PORT_RANGE", "HCCL_HOST_SOCKET_PORT_RANGE"),
-                        ("LITE_CI_HCCL_NPU_PORT_RANGE", "HCCL_NPU_SOCKET_PORT_RANGE")):
+    for key, target in (
+        ("LITE_CI_HCCL_HOST_PORT_RANGE", "HCCL_HOST_SOCKET_PORT_RANGE"),
+        ("LITE_CI_HCCL_NPU_PORT_RANGE", "HCCL_NPU_SOCKET_PORT_RANGE"),
+    ):
         raw = os.environ.get(key)
         if raw is not None:
             match = re.fullmatch(r"([1-9][0-9]{3,4})-([1-9][0-9]{3,4})", raw)
@@ -72,9 +74,16 @@ def run_dispatch_smoke(test: OverrideDefinitions, *, output_dir: Path) -> None:
         raise RuntimeError(f"invalid NODE_RANK={node_rank} for {nodes} nodes")
 
     ports = dispatcher_port_env()
-    if os.environ.get("LITE_CI_JOB_ID") and (not node_ips or set(ports) != {
-        "MASTER_PORT", "HCCL_IF_BASE_PORT", "HCCL_HOST_SOCKET_PORT_RANGE", "HCCL_NPU_SOCKET_PORT_RANGE",
-    }):
+    if os.environ.get("LITE_CI_JOB_ID") and (
+        not node_ips
+        or set(ports)
+        != {
+            "MASTER_PORT",
+            "HCCL_IF_BASE_PORT",
+            "HCCL_HOST_SOCKET_PORT_RANGE",
+            "HCCL_NPU_SOCKET_PORT_RANGE",
+        }
+    ):
         raise RuntimeError("CI smoke requires the complete dispatcher port lease and NODE_IPS")
     port = ports.get("MASTER_PORT")
     if nodes > 1 and port is None:
@@ -82,8 +91,17 @@ def run_dispatch_smoke(test: OverrideDefinitions, *, output_dir: Path) -> None:
     timeout = execution_timeout(test)
     world = test.nnodes * test.ngpu
     env = {**os.environ, **ports, "LITE_SMOKE_EXPECTED_WORLD": str(world), "OMP_NUM_THREADS": "1"}
-    cmd = [sys.executable, "-m", "torch.distributed.run",
-           "--nnodes", str(nodes), "--nproc-per-node", str(test.ngpu), "--node-rank", str(node_rank)]
+    cmd = [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--nnodes",
+        str(nodes),
+        "--nproc-per-node",
+        str(test.ngpu),
+        "--node-rank",
+        str(node_rank),
+    ]
     if port is None:
         cmd.append("--standalone")
     else:
@@ -98,10 +116,14 @@ def run_dispatch_smoke(test: OverrideDefinitions, *, output_dir: Path) -> None:
         subprocess.run(cmd, env=env, check=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"dispatch smoke exceeded {timeout}-second execution budget") from exc
-    result = {"status": "PASS", "test_id": test.test_name,
-              "world_size": world, "nodes": nodes, "devices_per_node": test.ngpu}
-    (output_dir / "dispatch_smoke_result.json").write_text(
-        json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
+    result = {
+        "status": "PASS",
+        "test_id": test.test_name,
+        "world_size": world,
+        "nodes": nodes,
+        "devices_per_node": test.ngpu,
+    }
+    (output_dir / "dispatch_smoke_result.json").write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
     print("[DISPATCH_SMOKE_RESULT] " + json.dumps(result, sort_keys=True), flush=True)
 
 
@@ -110,8 +132,13 @@ def verify_dispatch_smoke(test: OverrideDefinitions, output_dir: Path) -> None:
     if not found.is_file():
         raise RuntimeError(f"missing dispatch smoke result marker: {found}")
     result = json.loads(found.read_text(encoding="utf-8"))
-    expected = {"status": "PASS", "test_id": test.test_name,
-                "world_size": test.nnodes * test.ngpu, "nodes": test.nnodes, "devices_per_node": test.ngpu}
+    expected = {
+        "status": "PASS",
+        "test_id": test.test_name,
+        "world_size": test.nnodes * test.ngpu,
+        "nodes": test.nnodes,
+        "devices_per_node": test.ngpu,
+    }
     if result != expected:
         raise RuntimeError(f"invalid dispatch smoke result: {result}")
     print(f"[DISPATCH_SMOKE_VERIFY] PASS test={test.test_name} world_size={expected['world_size']}", flush=True)
@@ -138,9 +165,13 @@ def run_single(test: OverrideDefinitions, *, output_dir: Path | None = None) -> 
         parser.error("output_dir must be empty")
     # run_tests merges recipe env after os.environ: apply leases there as well.
     from dataclasses import replace
+
     test = replace(test, env_vars={**(test.env_vars or {}), **dispatcher_port_env()})
-    run_tests(argparse.Namespace(output_dir=str(output), ngpu=test.ngpu,
-                                 test_name=test.test_name, exclude=None), [test], parallel=True)
+    run_tests(
+        argparse.Namespace(output_dir=str(output), ngpu=test.ngpu, test_name=test.test_name, exclude=None),
+        [test],
+        parallel=True,
+    )
 
 
 def run_distributed(test: OverrideDefinitions, *, phase: str, output_dir: Path) -> None:
@@ -153,12 +184,15 @@ def run_distributed(test: OverrideDefinitions, *, phase: str, output_dir: Path) 
             verify_dispatch_smoke(test, output_dir)
             return
         from tests.integration_tests.loss_compare import extract_losses_from_tensorboard
+
         values = extract_losses_from_tensorboard(run_root, "tb_phase_0")
         expected = set(test.expected_steps[0]) if test.expected_steps else set()
         if set(values) != expected:
             raise RuntimeError(f"{test.test_name}: expected steps {sorted(expected)}, got {sorted(values)}")
-        print(f"[MULTINODE_VERIFY] PASS nodes={test.nnodes} ngpu={test.ngpu} "
-              f"steps={sorted(values)} loss={values}", flush=True)
+        print(
+            f"[MULTINODE_VERIFY] PASS nodes={test.nnodes} ngpu={test.ngpu} steps={sorted(values)} loss={values}",
+            flush=True,
+        )
         return
     if is_dispatch_smoke(test):
         run_dispatch_smoke(test, output_dir=output_dir)
@@ -173,8 +207,15 @@ def run_distributed(test: OverrideDefinitions, *, phase: str, output_dir: Path) 
         parser.error("output_dir must be empty")
     if len(test.override_args) != 1:
         raise ValueError("multi-node CI case requires exactly one CLI phase")
-    command = ["bash", test.train_script, "--dump_folder", str(run_root),
-               *(test.train_args or ()), *test.override_args[0], "--metrics.save_tb_folder=tb_phase_0"]
+    command = [
+        "bash",
+        test.train_script,
+        "--dump_folder",
+        str(run_root),
+        *(test.train_args or ()),
+        *test.override_args[0],
+        "--metrics.save_tb_folder=tb_phase_0",
+    ]
     print("[MULTINODE_LAUNCH] " + " ".join(command), flush=True)
     env = {**os.environ, **(test.env_vars or {}), **dispatcher_port_env()}
     raise SystemExit(subprocess.call(command, env=env))

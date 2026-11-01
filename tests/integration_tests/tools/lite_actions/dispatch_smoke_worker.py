@@ -4,11 +4,12 @@
 # LICENSE file in the root directory of this source tree.
 
 """Tiny NPU collective used to verify Lite Actions topology without model loading."""
+
 from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -24,8 +25,7 @@ def main() -> None:
         raise RuntimeError(f"expected world_size={expected_world}, got {world_size}")
 
     torch.npu.set_device(local_rank)
-    dist.init_process_group(backend="hccl", init_method="env://", timeout=__import__(
-        "datetime").timedelta(seconds=45))
+    dist.init_process_group(backend="hccl", init_method="env://", timeout=timedelta(seconds=45))
     try:
         # Explicitly construct the DP domain over all launched ranks.
         dp_ranks = list(range(world_size))
@@ -34,15 +34,21 @@ def main() -> None:
         dist.all_reduce(value, op=dist.ReduceOp.SUM, group=dp_group)
         expected_sum = world_size * (world_size - 1) // 2
         if int(value.cpu().item()) != expected_sum:
-            raise RuntimeError(
-                f"DP all_reduce mismatch: expected {expected_sum}, got {int(value.cpu().item())}")
+            raise RuntimeError(f"DP all_reduce mismatch: expected {expected_sum}, got {int(value.cpu().item())}")
         dist.barrier(group=dp_group)
         if rank == 0:
-            print("DISPATCH_SMOKE_PASS " + json.dumps({
-                "world_size": world_size,
-                "dp_world_size": world_size,
-                "all_reduce_sum": expected_sum,
-            }, sort_keys=True), flush=True)
+            print(
+                "DISPATCH_SMOKE_PASS "
+                + json.dumps(
+                    {
+                        "world_size": world_size,
+                        "dp_world_size": world_size,
+                        "all_reduce_sum": expected_sum,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
     finally:
         dist.destroy_process_group()
 

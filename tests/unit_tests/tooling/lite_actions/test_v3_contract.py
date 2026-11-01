@@ -6,9 +6,12 @@
 """Schema-3 behavior regressions shared by producer and consumer."""
 
 import copy
+import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
-from tests.integration_tests.tools.lite_actions.contract import normalize, create_plan, parse_plan, digest
+
+from tests.integration_tests.tools.lite_actions.contract import create_plan, digest, normalize, parse_plan
 
 D = dict(worker="blue", target_pool="a3_shared_blue", docker="image:tag")
 RUN = dict(id=19, run_attempt=2, head_sha="a" * 40)
@@ -94,3 +97,18 @@ class ContractV3Tests(unittest.TestCase):
     def test_unknown_kind_rejected(self):
         with self.assertRaises(ValueError):
             normalize(definition(ci_kind="shell"), D, 0)
+
+    def test_fixed_wire_fixture_matches_producer_and_parser(self):
+        fixture = Path(__file__).resolve().parents[4] / "tests/fixtures/lite_actions/schema3-plan.json"
+        plan = json.loads(fixture.read_text())
+        self.assertEqual(parse_plan(plan, RUN, plan["workflow"]), plan["cases"])
+        self.assertEqual(
+            create_plan(
+                plan["cases"], run_id=19, attempt=2, sha="a" * 40, workflow=plan["workflow"], defaults=plan["defaults"]
+            ),
+            plan,
+        )
+        changed = copy.deepcopy(plan)
+        changed["cases"][1]["execution_timeout_seconds"] += 1
+        with self.assertRaisesRegex(ValueError, "digest"):
+            parse_plan(changed, RUN, plan["workflow"])

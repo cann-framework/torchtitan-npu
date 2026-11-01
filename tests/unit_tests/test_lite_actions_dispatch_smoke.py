@@ -1,19 +1,19 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
 # Licensed under the BSD-style license found in the LICENSE file.
 
-from dataclasses import replace
 import json
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 from tests.integration_tests import OverrideDefinitions
+from tests.integration_tests.nightly_all_models_test import runner
 from tests.integration_tests.tools.lite_actions.contract import normalize
 from tests.integration_tests.tools.lite_actions.entrypoint import catalog, select
-from tests.integration_tests.nightly_all_models_test import runner
 
 
 class LiteActionsDispatchSmokeTests(unittest.TestCase):
@@ -41,14 +41,21 @@ class LiteActionsDispatchSmokeTests(unittest.TestCase):
                 with patch.object(runner.subprocess, "run") as launch:
                     runner.run_dispatch_smoke(case, output_dir=Path(tmp))
                 self.assertIn("--standalone", launch.call_args.args[0])
-                self.assertEqual(launch.call_args.kwargs["timeout"], normalize(case, self.defaults, 0)["execution_timeout_seconds"])
+                self.assertEqual(
+                    launch.call_args.kwargs["timeout"], normalize(case, self.defaults, 0)["execution_timeout_seconds"]
+                )
                 runner.verify_dispatch_smoke(case, Path(tmp))
 
     def test_manual_multinode_uses_explicit_rank_ports_and_derived_world(self):
         case = replace(self.case, nnodes=4, ngpu=2)
-        env = dict(NODE_IPS="192.0.2.1,192.0.2.2,192.0.2.3,192.0.2.4", NODE_RANK="2",
-                   LITE_CI_MASTER_PORT="16002", LITE_CI_HCCL_IF_BASE_PORT="20256",
-                   LITE_CI_HCCL_HOST_PORT_RANGE="24256-24319", LITE_CI_HCCL_NPU_PORT_RANGE="28256-28319")
+        env = dict(
+            NODE_IPS="192.0.2.1,192.0.2.2,192.0.2.3,192.0.2.4",
+            NODE_RANK="2",
+            LITE_CI_MASTER_PORT="16002",
+            LITE_CI_HCCL_IF_BASE_PORT="20256",
+            LITE_CI_HCCL_HOST_PORT_RANGE="24256-24319",
+            LITE_CI_HCCL_NPU_PORT_RANGE="28256-28319",
+        )
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, env, clear=True):
             with patch.object(runner.subprocess, "run") as launch:
                 runner.run_dispatch_smoke(case, output_dir=Path(tmp))
@@ -75,7 +82,10 @@ class LiteActionsDispatchSmokeTests(unittest.TestCase):
                 launch.assert_not_called()
 
     def test_invalid_hccl_port_is_rejected_by_shared_validator(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"LITE_CI_HCCL_IF_BASE_PORT": "bad"}, clear=True):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.dict(os.environ, {"LITE_CI_HCCL_IF_BASE_PORT": "bad"}, clear=True),
+        ):
             with patch.object(runner.subprocess, "run") as launch:
                 with self.assertRaisesRegex(ValueError, "LITE_CI_HCCL_IF_BASE_PORT"):
                     runner.run_dispatch_smoke(self.case, output_dir=Path(tmp))

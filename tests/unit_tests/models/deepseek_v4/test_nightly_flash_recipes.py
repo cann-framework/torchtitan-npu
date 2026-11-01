@@ -71,6 +71,7 @@ def test_a3_8p_optimizer_recipe_uses_selected_override(
     assert last(argv, '--optimizer.name') == optimizer
     assert last(argv, '--training.seq-len') == '4096'
     assert '--compile.no-enable' in argv
+    assert '--checkpoint.no-enable' in argv
     assert 'torchtitan_npu.override.common.rms_norm.asc' in selected_imports
     assert selected_imports.count(enabled_override) == 1
     assert disabled_override not in selected_imports

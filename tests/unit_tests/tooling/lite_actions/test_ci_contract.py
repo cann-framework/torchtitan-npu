@@ -5,16 +5,15 @@
 
 """Schema-3 producer, waiter correlation, workflow and output boundary checks."""
 
-import copy
 import importlib.util
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
 import yaml
-from tests.integration_tests.tools.lite_actions.contract import create_plan
 
 ROOT = Path(__file__).resolve().parents[4]
 D = dict(worker="blue", target_pool="a3_shared_blue", docker="dsv4.1_train_torchtitan_a3:cann_master_newest_0916")
@@ -77,6 +76,9 @@ class CIContract(unittest.TestCase):
                 self.assertEqual(json.loads(outputs["matrix"])["include"], plan["cases"])
                 self.assertEqual(plan["sha"], "a" * 40)
                 self.assertEqual(plan["schema"], 3)
+                self.assertEqual(
+                    (plan["run_id"], plan["attempt"], plan["repo"]), (7, 2, "cann-framework/torchtitan-npu")
+                )
             finally:
                 os.chdir(cwd)
 
@@ -233,3 +235,31 @@ class CIContract(unittest.TestCase):
         with patch.object(module.urllib.request, "urlopen", side_effect=error):
             with self.assertRaises(module.RetryableAPIError):
                 module.get("/rate-test", "isolated-token")
+
+    def test_callers_own_environment_defaults_and_nightly_preserves_16p(self):
+        root = ROOT / ".github/workflows"
+        common = yaml.load((root / "lite_actions_common.yml").read_text(), Loader=yaml.BaseLoader)
+        for key in ("default_worker", "default_target_pool", "default_docker"):
+            field = common["on"]["workflow_call"]["inputs"][key]
+            self.assertEqual(field["required"], "true")
+            self.assertNotIn("default", field)
+        for filename in ("nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"):
+            data = yaml.load((root / filename).read_text(), Loader=yaml.BaseLoader)
+            self.assertTrue(
+                all(
+                    data["jobs"]["ci"]["with"].get(key)
+                    for key in ("default_worker", "default_target_pool", "default_docker")
+                )
+            )
+        nightly = yaml.load((root / "nightly_fulltests.yml").read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual(
+            json.loads(nightly["jobs"]["ci"]["with"]["default_cases"]),
+            [{"suite": "a3_8p_tests"}, {"suite": "a3_16p_tests"}],
+        )
+
+    def test_prepare_rejects_wrong_repository_before_discovery(self):
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "other/repo"}):
+            with patch.object(self.prep, "expand_cases") as expand:
+                with self.assertRaisesRegex(ValueError, "untrusted GitHub CI repository"):
+                    self.prep.main()
+                expand.assert_not_called()
