@@ -92,7 +92,6 @@ def test_launch_and_verify_forward_original_case(monkeypatch, tmp_path, nnodes, 
     monkeypatch.setattr(impl, 'run_single', lambda *a, **kw: single.append((a, kw)))
     monkeypatch.setattr(impl, 'run_distributed', lambda *a, **kw: multi.append((a, kw)))
     output = tmp_path / 'output'
-    monkeypatch.setattr(sys, 'argv', ['entrypoint', 'launch', '--test-id', 'case_alpha', '--output-dir', str(output)]) if False else None
     monkeypatch.setattr(sys, 'argv', ['entrypoint', phase, '--test-id', 'case_alpha',
                                        '--output-dir', str(output)])
     entrypoint.main()
