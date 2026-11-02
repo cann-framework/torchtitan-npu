@@ -77,7 +77,7 @@ def capture_user_step(steps, job_id):
         (steps[2], "official_post_step", "后处理步骤"),
     ):
         require(
-            not (set(step) - PLATFORM_STEP_KEYS)
+            set(step) == PLATFORM_STEP_KEYS
             and {"identifier", "inputs", "env", "condition"}.issubset(step)
             and step.get("task") == task
             and step.get("name") == name
@@ -87,7 +87,7 @@ def capture_user_step(steps, job_id):
             and step.get("inputs") is None
             and step.get("env") is None
             and step.get("condition") is None
-            and step.get("continue-on-error") in (None, False),
+            and (step.get("continue-on-error") is None or step.get("continue-on-error") is False),
             "CAPTURE_PLATFORM_STEP_INVALID",
         )
     return steps[1]
@@ -123,7 +123,8 @@ def fixed_capture_job(api, run_id):
         "task": "official_shell",
     }
     require(
-        all(step.get(k) == v for k, v in expected.items()) and step.get("continue-on-error") in (None, False),
+        all(step.get(k) == v for k, v in expected.items())
+        and (step.get("continue-on-error") is None or step.get("continue-on-error") is False),
         "CAPTURE_STEP_IDENTITY_MISMATCH",
     )
     inputs = step.get("inputs")

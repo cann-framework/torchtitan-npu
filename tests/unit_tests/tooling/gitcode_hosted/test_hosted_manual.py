@@ -255,7 +255,8 @@ class HostedManualTests(unittest.TestCase):
         fixture = json.loads((Path(__file__).parent / "fixtures/gitcode_b472_platform_steps.json").read_text())
         steps = []
         for row in fixture["steps"]:
-            step = {key: value for key, value in row.items() if key not in {"keys", "inputs_type", "env_type"}}
+            step = dict.fromkeys(row["keys"])
+            step.update({key: value for key, value in row.items() if key not in {"keys", "inputs_type", "env_type"}})
             step["job_run_id"] = "job1"
             step["env"] = None
             if step["task"] == "official_shell":
@@ -283,13 +284,15 @@ class HostedManualTests(unittest.TestCase):
             ("identifier", "0"),
             ("status", "FAILED"),
             ("continue-on-error", True),
+            ("continue-on-error", 0),
+            ("continue-on-error", "false"),
             ("script", "evil"),
         ):
             self.api.job["steps"] = copy.deepcopy(original)
             self.api.job["steps"][0][field] = value
             with self.subTest(field=field), self.assertRaises(common.ManualForwardError):
                 dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
-        for missing in ("identifier", "inputs", "env", "condition"):
+        for missing in ("identifier", "inputs", "env", "condition", "icon_url"):
             self.api.job["steps"] = copy.deepcopy(original)
             del self.api.job["steps"][0][missing]
             with self.subTest(missing=missing), self.assertRaises(common.ManualForwardError):
@@ -297,6 +300,13 @@ class HostedManualTests(unittest.TestCase):
         for rows in (original[::-1], [*original, original[0]], [original[0], original[1], original[1]]):
             self.api.job["steps"] = rows
             with self.assertRaises(common.ManualForwardError):
+                dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
+
+    def test_user_step_continue_on_error_requires_exact_null_or_false(self):
+        self.emit()
+        for value in (0, "false", True):
+            self.api.job["steps"][0]["continue-on-error"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(common.ManualForwardError, "IDENTITY_MISMATCH"):
                 dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
 
     def test_duplicate_marker_extra_step_or_command_change_rejected(self):
