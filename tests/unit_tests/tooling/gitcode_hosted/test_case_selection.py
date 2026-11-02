@@ -86,6 +86,24 @@ class CaseSelectionTests(unittest.TestCase):
         self.assertEqual(set(plan["result_slots"]), {"aggregate", "case_000_worker_os_blue"})
         self.assertEqual(plan["artifacts"]["intent"]["content_sha256"], digest(self.api.intent))
 
+    def test_observed_platform_manual_event_uses_explicit_local_observation(self):
+        self.environment.update(LITE_ACTIONS_GITCODE_EVENT_NAME="Manual", ATOMGIT_EVENT_NAME="Manual")
+        intent = self.intent(["worker_os_blue"])
+        self.assertEqual(intent["selectors"], [{"test_id": "worker_os_blue"}])
+        self.authority.verify_event(intent)
+
+    def test_native_nonmanual_event_cannot_fall_back_or_be_overridden_to_manual(self):
+        for event in ("MergeRequest", "pull_request_target", "MR", "unknown"):
+            for override in (None, "manual", "Manual", "workflow_dispatch"):
+                with self.subTest(event=event, override=override):
+                    environment = dict(self.environment, ATOMGIT_EVENT_NAME=event)
+                    if override is not None:
+                        environment["LITE_ACTIONS_GITCODE_EVENT_NAME"] = override
+                    factory = Mock()
+                    with self.assertRaisesRegex(ValueError, "REAL_ACTION_IDENTITY_ADAPTER_REQUIRED"):
+                        bridge.execute(environment=environment, number=1, factory=factory)
+                    factory.assert_not_called()
+
     def test_omitted_selector_preserves_full_smoke_pipeline(self):
         intent = self.intent()
         self.assertEqual(
