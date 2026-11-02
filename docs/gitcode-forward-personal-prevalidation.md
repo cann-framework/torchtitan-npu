@@ -143,3 +143,18 @@ GitCode forward 在独立核验实际 GitHub run 的仓库、操作者、控制 
 之后立即输出 `GITHUB_RUN_BOUND`，包含该 case、数字 run ID 和固定仓库 run URL。
 即使随后 Prepare/Waiter 失败，该链接也保留用于排查；该事件不是 PASS，不授予当前 PR
 合入权限。未知 dispatch 仍只查既有 nonce，不自动重发 POST。
+
+### 首次 run title 初始化窗口
+
+真实运行曾在首 GET 报告 `DISPLAY_TITLE` 值不符，随后同一 run 与 capture nonce 精确
+匹配；首 GET 的标题原文未保存，因此“平台初始化不同步”仍是推断，不是已证初始值。
+仅本次 dispatch 成功响应返回、固定 API/HTML URL 核验过的数字 run ID，允许一次有限
+初始化窗口：其余五字段、仓库、操作者、路径及实际响应 ID 必须精确匹配；标题须为
+不含控制字符、不以 `lite-gitcode:` 开头的限长字符串，且 run 仍 queued/in_progress。
+最多六次 GET、30 秒，同时不超过原请求 deadline 和 capture 300 秒年龄；不刷新预算。
+缺字段、类型错误、另一 nonce 或其他身份冲突立即拒绝，不等待错误身份变成正确。
+
+窗口内只输出固定 `INITIAL_TITLE_PENDING` 与次数，不输出标题原文，不重新 POST、
+不换 run ID 或 nonce。首次标题精确匹配后永久回到严格校验，后续任何改变仍拒绝。
+这不暂停已经启动的 GitHub Prepare；Blue 自身的 nonce、固定请求与准入校验保持独立，
+不能把 GitCode 等待状态解释成新执行锁或当前 PR 合入授权。

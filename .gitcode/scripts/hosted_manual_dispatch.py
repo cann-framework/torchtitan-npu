@@ -289,7 +289,7 @@ def retrieve_intent(api, environment, *, clock=time.time):
     return intent
 
 
-def validate_github_run(run, intent):
+def validate_github_run(run, intent, *, allow_initial_title_pending=False):
     require(type(run.get("id")) is int and run["id"] > 0, "GITHUB_RUN_ID_INVALID")
     expected = {
         "run_attempt": 1,
@@ -297,7 +297,6 @@ def validate_github_run(run, intent):
         "head_sha": intent["control_sha"],
         "head_branch": "master",
         "workflow_id": GH_WORKFLOW_ID,
-        "display_title": "lite-gitcode:" + intent["bridge"]["bridge_nonce"],
     }
     for field, expected_value in expected.items():
         # Field names come only from this fixed mapping; never print actual values.
@@ -320,7 +319,39 @@ def validate_github_run(run, intent):
         and run.get("path") in (GH_WORKFLOW, GH_WORKFLOW + "@master"),
         "GITHUB_RUN_OWNER_MISMATCH",
     )
+    require("display_title" in run, "GITHUB_RUN_MISSING_DISPLAY_TITLE")
+    title = run["display_title"]
+    require(type(title) is str, "GITHUB_RUN_TYPE_MISMATCH_DISPLAY_TITLE")
+    expected_title = "lite-gitcode:" + intent["bridge"]["bridge_nonce"]
+    if title != expected_title:
+        if (
+            allow_initial_title_pending
+            and len(title) <= 200
+            and not any(ord(char) < 32 or ord(char) == 127 for char in title)
+            and not title.startswith("lite-gitcode:")
+            and run.get("status") in {"queued", "in_progress"}
+        ):
+            return None
+        raise ManualForwardError("GITHUB_RUN_VALUE_MISMATCH_DISPLAY_TITLE")
     return run["id"]
+
+
+def bind_initial_run(api, intent, run_id, *, clock, sleep, progress):
+    # Only a validated response from THIS dispatch grants this narrow pending path.
+    expires = min(int(clock()) + 30, intent["deadline"], intent["bridge"]["event_created_at"] + 300)
+    for attempt in range(1, 7):
+        require(int(clock()) < expires, "GITHUB_INITIAL_TITLE_TIMEOUT")
+        run_identity(api, intent["bridge"]["bridge_action_run"], intent["control_sha"])
+        require(int(clock()) < expires, "GITHUB_INITIAL_TITLE_TIMEOUT")
+        run = api.gh(f"/actions/runs/{run_id}")
+        require(int(clock()) < expires, "GITHUB_INITIAL_TITLE_TIMEOUT")
+        require(run.get("id") == run_id and type(run.get("id")) is int, "GITHUB_RUN_RESPONSE_ID_MISMATCH")
+        if validate_github_run(run, intent, allow_initial_title_pending=True) is not None:
+            return run
+        progress({"event": "INITIAL_TITLE_PENDING", "attempt": attempt})
+        if attempt < 6:
+            sleep(min(5, max(0, expires - int(clock()))))
+    raise ManualForwardError("GITHUB_INITIAL_TITLE_TIMEOUT")
 
 
 def find_run(api, intent):
@@ -351,6 +382,7 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
     require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
     # A completed capture is the retry identity. Never invent a new nonce.
     run_id = find_run(api, intent)
+    initial_response_run = False
     if run_id is None:
         require(
             int(clock()) < intent["deadline"] and int(clock()) - intent["bridge"]["event_created_at"] <= 300,
@@ -372,6 +404,7 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
                 and response.get("html_url") == f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
                 "DISPATCH_RESPONSE_IDENTITY_MISMATCH",
             )
+            initial_response_run = True
         if run_id is None:
             for _ in range(6):
                 require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
@@ -380,10 +413,17 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
                     break
                 sleep(5)
             require(run_id is not None, "DISPATCH_OUTCOME_UNKNOWN_NO_RETRY")
+    first_bound = (
+        bind_initial_run(api, intent, run_id, clock=clock, sleep=sleep, progress=progress)
+        if initial_response_run
+        else None
+    )
     reported_run = False
     while int(clock()) < intent["deadline"]:
         run_identity(api, intent["bridge"]["bridge_action_run"], intent["control_sha"])
-        run = api.gh(f"/actions/runs/{run_id}")
+        run = first_bound if first_bound is not None else api.gh(f"/actions/runs/{run_id}")
+        first_bound = None
+        require(run.get("id") == run_id and type(run.get("id")) is int, "GITHUB_RUN_RESPONSE_ID_MISMATCH")
         validate_github_run(run, intent)
         if not reported_run:
             progress(

@@ -436,6 +436,122 @@ class HostedManualTests(unittest.TestCase):
         self.assertEqual(row["scope"], "post_failure_observation_not_first_get")
         self.assertEqual(dispatch.validate_github_run(row, intent), 41438604990)
 
+    def initial_run_sequence(self, transform):
+        original = self.api.gh
+        reads = []
+
+        def controlled(suffix, **kwargs):
+            row = original(suffix, **kwargs)
+            if suffix == "/actions/runs/42":
+                reads.append(suffix)
+                row = transform(row, len(reads))
+            return row
+
+        self.api.gh = controlled
+        return reads
+
+    def test_initial_non_nonce_title_pending_then_exact_one_post_no_early_binding(self):
+        intent = self.emit()
+        events = []
+
+        def first(row, count):
+            if count == 1:
+                row.update(display_title="Dispatcher-Smoke", status="queued", conclusion=None)
+            return row
+
+        reads = self.initial_run_sequence(first)
+        result = dispatch.forward(
+            self.api,
+            intent,
+            clock=lambda: self.now,
+            sleep=lambda seconds: setattr(self, "now", self.now + seconds),
+            progress=events.append,
+        )
+        self.assertEqual(result["historical_execution_result"], "PASS")
+        self.assertEqual(self.api.posts, 1)
+        self.assertEqual(len(reads), 2)
+        self.assertEqual(events[0], {"event": "INITIAL_TITLE_PENDING", "attempt": 1})
+        self.assertEqual(events[1]["event"], "GITHUB_RUN_BOUND")
+        self.assertNotIn("Dispatcher-Smoke", json.dumps(events))
+
+    def test_initial_title_other_nonce_control_or_oversize_rejected_without_retry(self):
+        for title in ("lite-gitcode:other_nonce", "lite-gitcode:", "bad\nvalue", "x" * 201):
+            self.api = FakeAPI()
+            intent = self.emit()
+            reads = self.initial_run_sequence(
+                lambda row, _, title=title: {**row, "display_title": title, "status": "queued"}
+            )
+            with (
+                self.subTest(title=title[:20]),
+                self.assertRaisesRegex(common.ManualForwardError, "VALUE_MISMATCH_DISPLAY_TITLE"),
+            ):
+                dispatch.forward(self.api, intent, clock=lambda: self.now, sleep=lambda _: None)
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(self.api.posts, 1)
+
+    def test_initial_title_pending_does_not_hide_other_identity_errors(self):
+        for field, value in (("head_sha", "c" * 40), ("run_attempt", "1"), ("id", 43), ("actor", {"login": "other"})):
+            self.api = FakeAPI()
+            intent = self.emit()
+            reads = self.initial_run_sequence(
+                lambda row, _, field=field, value=value: {
+                    **row,
+                    "display_title": "initial",
+                    "status": "queued",
+                    field: value,
+                }
+            )
+            with self.subTest(field=field), self.assertRaises(common.ManualForwardError):
+                dispatch.forward(self.api, intent, clock=lambda: self.now, sleep=lambda _: None)
+            self.assertEqual(len(reads), 1)
+
+    def test_initial_title_has_six_get_limit_even_if_clock_does_not_move(self):
+        intent = self.emit()
+        reads = self.initial_run_sequence(lambda row, _: {**row, "display_title": "", "status": "queued"})
+        with self.assertRaisesRegex(common.ManualForwardError, "INITIAL_TITLE_TIMEOUT"):
+            dispatch.forward(self.api, intent, clock=lambda: self.now, sleep=lambda _: None)
+        self.assertEqual(len(reads), 6)
+        self.assertEqual(self.api.posts, 1)
+
+    def test_slow_initial_get_crossing_30_seconds_deadline_or_capture_age_cannot_bind(self):
+        for budget in ("window", "deadline", "age"):
+            self.api = FakeAPI()
+            self.now = 1000
+            intent = self.emit()
+            if budget == "deadline":
+                intent["deadline"] = 1001
+            if budget == "age":
+                self.now = 1299
+
+            def slow(row, _, budget=budget):
+                self.now += 30 if budget == "window" else 1
+                return row
+
+            self.initial_run_sequence(slow)
+            events = []
+            with (
+                self.subTest(budget=budget),
+                self.assertRaisesRegex(common.ManualForwardError, "INITIAL_TITLE_TIMEOUT"),
+            ):
+                dispatch.forward(self.api, intent, clock=lambda: self.now, sleep=lambda _: None, progress=events.append)
+            self.assertEqual(events, [])
+
+    def test_bound_title_change_is_revocation_not_new_pending_window(self):
+        intent = self.emit()
+
+        def mutate(row, count):
+            row.update(status="in_progress", conclusion=None)
+            if count == 2:
+                row["display_title"] = "initial again"
+            return row
+
+        reads = self.initial_run_sequence(mutate)
+        events = []
+        with self.assertRaisesRegex(common.ManualForwardError, "VALUE_MISMATCH_DISPLAY_TITLE"):
+            dispatch.forward(self.api, intent, clock=lambda: self.now, sleep=lambda _: None, progress=events.append)
+        self.assertEqual(len(reads), 2)
+        self.assertEqual([event["event"] for event in events], ["GITHUB_RUN_BOUND"])
+
     def test_lost_dispatch_response_recovers_nonce_without_repost(self):
         intent = self.emit()
         self.api.lose_response = True
@@ -507,16 +623,21 @@ class HostedManualTests(unittest.TestCase):
     def test_slow_final_run_read_cannot_return_pass_after_deadline(self):
         intent = self.emit()
         original = self.api.gh
+        reads = []
 
         def slow(suffix, **kwargs):
             result = original(suffix, **kwargs)
             if suffix == "/actions/runs/42":
-                self.now = intent["deadline"]
+                reads.append(suffix)
+                if len(reads) == 1:
+                    result.update(status="in_progress", conclusion=None)
+                else:
+                    self.now = intent["deadline"]
             return result
 
         self.api.gh = slow
         with self.assertRaisesRegex(common.ManualForwardError, "DEADLINE_EXCEEDED"):
-            dispatch.forward(self.api, intent, clock=lambda: self.now)
+            dispatch.forward(self.api, intent, clock=lambda: self.now, sleep=lambda _: None)
 
     def test_changed_completed_capture_job_is_rejected(self):
         self.emit()
