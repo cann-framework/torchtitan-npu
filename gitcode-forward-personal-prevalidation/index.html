@@ -105,6 +105,11 @@
                   <li class="toctree-l1"><a class="reference internal" href="../developer_guides/unit-test-architecture/">Unit Test 架构与迁移方案</a>
                   </li>
               </ul>
+              <p class="caption"><span class="caption-text">Evidence</span></p>
+              <ul>
+                  <li class="toctree-l1"><a class="reference internal" href="../evidence/sdk-bootstrap-review-closure-20261103/">SDK bootstrap review closure — 2026-11-03</a>
+                  </li>
+              </ul>
               <p class="caption"><span class="caption-text">Feature guides</span></p>
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../feature_guides/anticipatory_routing/">Loss spike 检测与路由重放（Anticipatory Routing）</a>
@@ -262,13 +267,21 @@ attempt 1。它不是原始 PR 事件适配器；不能用其成功结果授权�
 </ul>
 <p>这些是部署检查项，不表示已经配置或完成真实端到端验收。</p>
 <h3 id="cpu">修改与 CPU 验证</h3>
-<p>从仓库根目录重新生成受审脚本和 workflow：</p>
+<p>通用 manual capture、forward/receipt 校验、三 case 展示和 aggregate gate 已归入
+Lite Actions SDK 的 <code>ci_core.gitcode_manual</code>。模型仓只保留六个 Job 配置和一个约 4 KB
+的固定 SDK bootstrap。Bootstrap 通过完整 SDK commit SHA 下载公开源码归档，校验归档
+SHA-256，仅提取 <code>ci_core/</code>，并检查归档路径、文件类型及解压大小；不使用 PAT 下载 SDK，
+不引入服务或新授权协议。</p>
+<p>从仓库根目录重新生成受审 workflow：</p>
 <pre><code class="language-bash">python3 -B .gitcode/scripts/build_hosted_manual_workflow.py
 </code></pre>
-<p>生成器输出 <code>capture_script_sha256</code>，必须与 Worker 可信配置一致。生成文件不得绕过
-源脚本手工修改。<code>tests/unit_tests/tooling/gitcode_hosted/test_hosted_manual.py</code>
-使用合成 API 覆盖脚本/日志绑定、真实 SDK 编码契约、权限边界、单次派发恢复、超时及
-历史结果语义；不代表真实平台、NPU 或完整产品 UT。无需导入 torch 或初始化 NPU。</p>
+<p>生成器输出 <code>capture_script_sha256</code>，必须与 Worker 可信配置的
+<code>manual_capture.script_sha256</code> 一致。SDK SHA 和 archive SHA 必须固定为完整值；禁止
+<code>latest</code>、分支名或未校验的动态下载。<code>tests/unit_tests/tooling/gitcode_hosted/test_manual_sdk_bootstrap.py</code>
+覆盖六 Job、凭据隔离、OS-only 默认、显式三 case、bootstrap 体积和真实隔离 subprocess
+下载/校验/执行 SDK aggregate。SDK 仓的 <code>tests/test_gitcode_manual_forward.py</code> 保留原
+capture/dispatch/receipt/canonical/generation/nonce/cleanup/aggregate 安全回归；不代表
+真实 NPU 或完整产品 UT。</p>
 <h3 id="_5">流水线读取权限与失败定位</h3>
 <p>自动平台 token 的流水线读取域为 singular <code>action: read</code>，与 repository/project 的读取
 域不同，参见<a href="https://docs.gitcode.com/docs/help/home/org_project/pipeline/security-permissions/token-permissions/">官方 Token 权限表</a>。

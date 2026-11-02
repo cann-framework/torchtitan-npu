@@ -1,0 +1,96 @@
+{
+  "observed_date": "2026-11-02",
+  "repository": "depeng1994/torchtitan-npu",
+  "base_control_sha": "6eae06c977726a6fbe1337fbf8d65d229d7036ec",
+  "diagnostic_branches": [
+    "diag/platform-init-probe-20261103",
+    "diag/platform-script-threshold-20261103",
+    "diag/platform-script-threshold-low-20261103",
+    "diag/platform-script-threshold-tiny-20261103",
+    "diag/platform-output-order-20261103",
+    "diag/platform-valid-89k-script-20261103"
+  ],
+  "safety": {
+    "secrets_referenced": false,
+    "github_dispatch": false,
+    "blue_worker": false,
+    "npu": false,
+    "master_modified": false,
+    "only_personal_diagnostic_branches_pushed": true
+  },
+  "valid_comparisons": [
+    {
+      "case": "small_script_small_yaml",
+      "workflow_run_id": "257c55e76db446b0a8d74026ba75f62b",
+      "commit": "9ffbbff1c20b438fe3be925e80404266a4a843cd",
+      "yaml_bytes": 825,
+      "script_bytes": 37,
+      "status": "COMPLETED",
+      "jobs": {"Producer": "COMPLETED", "Consumer": "COMPLETED"},
+      "start_utc": "2026-11-02T17:39:00Z",
+      "end_utc": "2026-11-02T17:39:31Z"
+    },
+    {
+      "case": "large_yaml_small_script_same_needs_outputs_always_schema",
+      "workflow_run_id": "f75acf5f80f04728bbcdeed5229470b3",
+      "commit": "9ffbbff1c20b438fe3be925e80404266a4a843cd",
+      "yaml_bytes": 500996,
+      "script_bytes": 37,
+      "status": "COMPLETED",
+      "jobs": {"Producer": "COMPLETED", "Consumer": "COMPLETED"},
+      "start_utc": "2026-11-02T17:38:59Z",
+      "end_utc": "2026-11-02T17:39:30Z"
+    },
+    {
+      "case": "valid_4k_script_output_first",
+      "workflow_run_id": "fc1ff6e16b884f508311487286429918",
+      "commit": "576f6a987eeeafc1c12f5fc53b42e934837d6adb",
+      "yaml_bytes": 5128,
+      "script_bytes": 4000,
+      "status": "COMPLETED",
+      "jobs": {"Producer": "COMPLETED", "Consumer": "COMPLETED"},
+      "start_utc": "2026-11-02T18:03:41Z",
+      "end_utc": "2026-11-02T18:04:45Z"
+    }
+  ],
+  "valid_large_script_failure": {
+    "workflow_run_id": "2afc671543454fde9da690435c299097",
+    "commit": "0ded269",
+    "yaml_bytes": 96778,
+    "script_bytes": 89065,
+    "output_command_position": "first",
+    "status": "FAILED",
+    "start_utc": "2026-11-02T18:05:59Z",
+    "end_utc": "2026-11-02T18:06:00Z",
+    "jobs_detail_api": "HTTP_400_INTERNAL_ERROR"
+  },
+  "accepted_script_size_observation": {
+    "workflow_run_id": "a120172bb8e046c185e16de285624818",
+    "script_bytes": 64000,
+    "producer_job": "COMPLETED",
+    "consumer_job": "FAILED",
+    "consumer_failure_cause": "invalid_test_fixture_output_echo_was_commented_out_by_padding_algorithm",
+    "interpretation": "platform accepted and executed a 64KB step script; do not count consumer failure as a platform or output-contract failure"
+  },
+  "invalid_output_fixture_runs": [
+    {"workflow_run_id": "90ada726340344da8331e81dd5c4d860", "script_bytes": 4000, "producer": "COMPLETED", "consumer": "FAILED"},
+    {"workflow_run_id": "6cdf7fa684a646f79e652e87104974f4", "script_bytes": 8000, "producer": "COMPLETED", "consumer": "FAILED"},
+    {"workflow_run_id": "7199a3619839455eb5cbf07f471cb39e", "script_bytes": 12000, "producer": "COMPLETED", "consumer": "FAILED"},
+    {"workflow_run_id": "01612de11e61438daa31c676002214c2", "script_bytes": 16000, "producer": "COMPLETED", "consumer": "FAILED"},
+    {"workflow_run_id": "eddf771c4dde4bf2ba1c47eee592b0f0", "script_bytes": 24000, "producer": "COMPLETED", "consumer": "FAILED"},
+    {"workflow_run_id": "ebf714f5fbff4b35adde2aced9a4b8df", "script_bytes": 32000, "producer": "COMPLETED", "consumer": "FAILED"},
+    {"workflow_run_id": "aaca206d15b0487e830ae84da0405ddd", "script_bytes": 48000, "producer": "COMPLETED", "consumer": "FAILED"}
+  ],
+  "initial_full_forward_observations": [
+    {"workflow_run_id": "28afcac982b343519691d3a970b5d3b8", "script_bytes": 89065, "status": "FAILED", "duration_seconds": 1, "jobs_detail_api": "HTTP_400_INTERNAL_ERROR"},
+    {"workflow_run_id": "7551674c03a64bc7ab4e26151cf1dbf5", "script_bytes": 89065, "yaml_bytes": 500996, "status": "FAILED", "duration_seconds": 1, "jobs_detail_api": "HTTP_400_INTERNAL_ERROR"}
+  ],
+  "causal_conclusion": {
+    "total_yaml_size_500996_bytes": "not_sufficient_to_cause_failure; the same two-job schema completed with 37-byte script",
+    "needs_outputs_always_schema": "valid; completed in baseline and large-YAML small-script controls",
+    "single_step_script_limit": "strongly isolated; 64KB script was accepted and executed, 89,065-byte script failed before any job details were available",
+    "numeric_limit": "not exactly established; bounded to greater than 64,000 bytes and less than or equal to 89,065 bytes under this runner/schema",
+    "implementation_implication": "the 89,065-byte manual_forward step must move out of model-repository inline YAML; shrinking only the three result-display copies is insufficient"
+  },
+  "fixture_correction": "The first size sweep placed an output echo after generated comments. A one-byte remainder caused the final comment to omit its newline and swallow the echo. Those consumer failures are marked invalid above. The corrected 4KB echo-first run completed both Producer and Consumer, confirming the output contract."
+}
