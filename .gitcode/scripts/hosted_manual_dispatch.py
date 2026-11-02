@@ -2,11 +2,14 @@
 
 import base64
 import hashlib
+import io
 import json
 import os
 import re
+import stat
 import time
 import urllib.parse
+import zipfile
 
 from hosted_manual_common import (
     ALLOWED_ACTOR,
@@ -171,7 +174,7 @@ def capture_log(api, run_id, job_id, step_id):
     raise ManualForwardError("CAPTURE_LOG_INCOMPLETE")
 
 
-def retrieve_intent(api, environment, *, clock=time.time):
+def retrieve_intent(api, environment, *, clock=time.time, historical=False):
     run_id, control = context(environment)
     run = run_identity(api, run_id, control)
     job, step_id = fixed_capture_job(api, run_id)
@@ -227,7 +230,10 @@ def retrieve_intent(api, environment, *, clock=time.time):
         "CAPTURE_CONTROL_MISMATCH",
     )
     require(
-        intent["selectors"] == [{"test_id": name} for name in ALLOWED_CASES],
+        intent["selectors"] in (
+            [{"test_id": "worker_os_blue"}],
+            [{"test_id": name} for name in ALLOWED_CASES],
+        ),
         "CAPTURE_CASE_NOT_ALLOWED",
     )
     bridge = intent["bridge"]
@@ -268,11 +274,15 @@ def retrieve_intent(api, environment, *, clock=time.time):
         "CAPTURE_PLATFORM_TIME_INVALID",
     )
     require(
-        start // 1000 - 30 <= at <= end // 1000 + 30 and int(clock()) - at <= 300 and at <= int(clock()) + 30,
+        start // 1000 - 30 <= at <= end // 1000 + 30
+        and at <= int(clock()) + 30
+        and (historical or int(clock()) - at <= 300),
         "CAPTURE_AGE_INVALID",
     )
     require(
-        bridge["event_created_at"] == at and intent["deadline"] == at + 900 and int(clock()) < intent["deadline"],
+        bridge["event_created_at"] == at
+        and intent["deadline"] == at + 900
+        and (historical or int(clock()) < intent["deadline"]),
         "CAPTURE_DEADLINE_INVALID",
     )
     again, again_id = fixed_capture_job(api, run_id)
@@ -281,9 +291,10 @@ def retrieve_intent(api, environment, *, clock=time.time):
         "CAPTURE_EVIDENCE_CHANGED",
     )
     run_identity(api, run_id, control)
-    require(snapshot(api, intent["pr"]["number"]) == intent["pr"], "CAPTURE_PR_STALE")
-    release(api, control)
-    require(int(clock()) - at <= 300 and int(clock()) < intent["deadline"], "CAPTURE_EXPIRED_DURING_READ")
+    if not historical:
+        require(snapshot(api, intent["pr"]["number"]) == intent["pr"], "CAPTURE_PR_STALE")
+        release(api, control)
+        require(int(clock()) - at <= 300 and int(clock()) < intent["deadline"], "CAPTURE_EXPIRED_DURING_READ")
     return intent
 
 
@@ -382,40 +393,273 @@ CASE_ORDER = {
 }
 
 
-def case_check(api, intent, run_id, test_id, *, run_conclusion="failure"):
+def strict_json(raw, *, limit):
+    require(isinstance(raw, bytes) and len(raw) <= limit, "PLAN_JSON_SIZE_LIMIT")
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, "PLAN_DUPLICATE_JSON_KEY")
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw, object_pairs_hook=unique)
+    except (ValueError, RecursionError, UnicodeError):
+        raise ManualForwardError("PLAN_JSON_INVALID") from None
+    require(isinstance(value, dict) and canonical(value) == raw, "PLAN_JSON_NOT_CANONICAL")
+    return value
+
+
+def read_plan_artifact(api, intent, run_id):
+    listing = api.gh(f"/actions/runs/{run_id}/artifacts?name=lite-ci-request-1&per_page=10&page=1")
+    rows = listing.get("artifacts") if isinstance(listing, dict) else None
+    require(
+        isinstance(rows, list) and type(listing.get("total_count")) is int
+        and listing["total_count"] == len(rows) == 1,
+        "GITHUB_PLAN_ARTIFACT_MISSING_OR_AMBIGUOUS",
+    )
+    artifact_id = rows[0].get("id")
+    require(type(artifact_id) is int and artifact_id > 0 and rows[0].get("name") == "lite-ci-request-1",
+            "GITHUB_PLAN_ARTIFACT_IDENTITY_INVALID")
+    metadata = api.gh(f"/actions/artifacts/{artifact_id}")
+    owner = metadata.get("workflow_run") or {}
+    digest_value = metadata.get("digest")
+    require(
+        metadata.get("id") == artifact_id and metadata.get("name") == "lite-ci-request-1"
+        and metadata.get("expired") is False
+        and type(metadata.get("size_in_bytes")) is int and 0 < metadata["size_in_bytes"] <= 256 * 1024
+        and type(owner.get("id")) is int and owner["id"] == run_id
+        and type(owner.get("repository_id")) is int and owner["repository_id"] == GH_ID
+        and owner.get("head_sha") == intent["control_sha"] and owner.get("head_branch") == "master"
+        and isinstance(digest_value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest_value),
+        "GITHUB_PLAN_ARTIFACT_OWNER_OR_DIGEST_MISMATCH",
+    )
+    archive = api.download_public_artifact(artifact_id)
+    require(
+        len(archive) == metadata["size_in_bytes"] and hashlib.sha256(archive).hexdigest() == digest_value[7:],
+        "GITHUB_PLAN_ARTIFACT_ZIP_DIGEST_MISMATCH",
+    )
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+            members = zf.infolist()
+            require(len(members) == 1 and members[0].filename == "ci-request.json",
+                    "GITHUB_PLAN_ARTIFACT_MEMBERS_INVALID")
+            info = members[0]
+            mode = info.external_attr >> 16
+            require(
+                not info.is_dir() and not (info.flag_bits & 1)
+                and stat.S_IFMT(mode) in (0, stat.S_IFREG)
+                and info.compress_type in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                and 0 < info.file_size <= 256 * 1024,
+                "GITHUB_PLAN_ARTIFACT_MEMBER_UNSAFE",
+            )
+            raw = zf.read(info)
+    except (zipfile.BadZipFile, EOFError, RuntimeError):
+        raise ManualForwardError("GITHUB_PLAN_ARTIFACT_ZIP_INVALID") from None
+    plan = strict_json(raw, limit=256 * 1024)
+    unsigned = dict(plan)
+    digest_plan = unsigned.pop("plan_digest", None)
+    require(
+        isinstance(digest_plan, str) and re.fullmatch(r"[0-9a-f]{64}", digest_plan)
+        and hashlib.sha256(canonical(unsigned)).hexdigest() == digest_plan,
+        "IMMUTABLE_PLAN_DIGEST_MISMATCH",
+    )
+    gh, control = plan.get("github") or {}, plan.get("control") or {}
+    jobs_response = api.gh(f"/actions/runs/{run_id}/jobs?filter=latest&per_page=100")
+    jobs = jobs_response.get("jobs") if isinstance(jobs_response, dict) else None
+    require(
+        isinstance(jobs, list) and type(jobs_response.get("total_count")) is int
+        and jobs_response["total_count"] == len(jobs) <= 100,
+        "GITHUB_PREPARE_JOB_LIST_INCOMPLETE",
+    )
+    prepare_jobs = [job for job in jobs if job.get("name") == "prepare-gitcode"]
+    require(
+        len(prepare_jobs) == 1
+        and prepare_jobs[0].get("status") == "completed"
+        and prepare_jobs[0].get("conclusion") == "success"
+        and prepare_jobs[0].get("run_id") == run_id
+        and prepare_jobs[0].get("run_attempt") == 1,
+        "GITHUB_PREPARE_JOB_NOT_SUCCESSFUL",
+    )
+    require(
+        plan.get("schema") == 4 and plan.get("source_provider") == "gitcode"
+        and plan.get("test_mode") == "merge_result"
+        and gh.get("repo") == GH_REPO and gh.get("repo_id") == GH_ID
+        and gh.get("run_id") == run_id and gh.get("run_attempt") == 1
+        and gh.get("prepare_job_id") == prepare_jobs[0].get("id")
+        and gh.get("workflow_id") == GH_WORKFLOW_ID and gh.get("workflow_path") == GH_WORKFLOW
+        and control.get("control_sha") == intent["control_sha"]
+        and plan.get("pr") == intent["pr"] and plan.get("bridge") == intent["bridge"]
+        and plan.get("pipeline") == intent["pipeline"] and plan.get("deadline") == intent["deadline"],
+        "IMMUTABLE_PLAN_RUN_OR_CAPTURE_MISMATCH",
+    )
+    spec_payload = {
+        "pr": plan["pr"],
+        "merge": plan["merge"],
+        "control": plan["control"],
+        "workflow_id": gh["workflow_id"],
+        "workflow_path": gh["workflow_path"],
+        "pipeline": plan["pipeline"],
+        "policy_version": plan["policy_version"],
+        "environment_version": plan["environment_version"],
+        "cases": plan["cases"],
+    }
+    if "authority_protocol" in plan:
+        spec_payload["authority_protocol"] = plan["authority_protocol"]
+    require(
+        isinstance(plan.get("request_spec_digest"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", plan["request_spec_digest"])
+        and hashlib.sha256(canonical(spec_payload)).hexdigest() == plan["request_spec_digest"],
+        "IMMUTABLE_PLAN_SPEC_DIGEST_MISMATCH",
+    )
+    expected_cases = [CASE_ORDER[row["test_id"]] for row in intent["selectors"]]
+    cases = plan.get("cases")
+    require(
+        isinstance(cases, list) and [row.get("case_id") for row in cases] == expected_cases
+        and len({row.get("case_id") for row in cases}) == len(cases),
+        "IMMUTABLE_PLAN_CASE_SET_MISMATCH",
+    )
+    expected_slots = {"aggregate", *expected_cases}
+    if plan.get("authority_protocol") == "artifact-check-v1":
+        expected_slots.add("authority")
+    require(isinstance(plan.get("result_slots"), dict) and set(plan["result_slots"]) == expected_slots,
+            "IMMUTABLE_PLAN_RESULT_SLOTS_INVALID")
+    slot_ids = [slot.get("id") for slot in plan["result_slots"].values() if isinstance(slot, dict)]
+    require(
+        len(slot_ids) == len(expected_slots)
+        and all(type(value) is int and value > 0 for value in slot_ids)
+        and len(set(slot_ids)) == len(slot_ids),
+        "IMMUTABLE_PLAN_RESULT_SLOT_IDS_INVALID",
+    )
+    return plan
+
+
+def expected_slot(plan, case_id):
+    gh = plan["github"]
+    external = "lite-actions:v4:" + hashlib.sha256(canonical({
+        "repo_id": GH_ID, "run_id": gh["run_id"], "run_attempt": gh["run_attempt"],
+        "case_id": case_id, "request_spec_digest": plan["request_spec_digest"],
+    })).hexdigest()
+    return {
+        "app_id": 5575236, "repo_id": GH_ID, "control_sha": plan["control"]["control_sha"],
+        "run_id": gh["run_id"], "run_attempt": gh["run_attempt"],
+        "case_id": case_id, "external_id": external,
+    }
+
+
+def read_fixed_check(api, plan, case_id):
+    slot = plan["result_slots"].get(case_id)
+    require(isinstance(slot, dict) and type(slot.get("id")) is int and slot["id"] > 0,
+            "IMMUTABLE_PLAN_CHECK_ID_MISSING")
+    expected = expected_slot(plan, case_id)
+    require(set(slot) == {"id", *expected} and all(slot.get(k) == v for k, v in expected.items()),
+            "IMMUTABLE_PLAN_CHECK_SLOT_MISMATCH")
+    check = api.gh(f"/check-runs/{slot['id']}")
+    run_id = plan["github"]["run_id"]
+    require(
+        type(check.get("id")) is int and check["id"] == slot["id"]
+        and check.get("name") == f"lite-v4-{run_id}-1-{case_id}-{plan['request_spec_digest'][:12]}"
+        and check.get("head_sha") == plan["control"]["control_sha"]
+        and (check.get("app") or {}).get("id") == 5575236
+        and check.get("external_id") == expected["external_id"]
+        and check.get("details_url") == f"https://github.com/{GH_REPO}/actions/runs/{run_id}"
+        and check.get("url") == f"https://api.github.com/repos/{GH_REPO}/check-runs/{slot['id']}",
+        "FIXED_CHECK_FULL_IDENTITY_MISMATCH",
+    )
+    return check
+
+
+def read_admission_receipt(api, plan, intent):
+    check = read_fixed_check(api, plan, "aggregate")
+    summary = (check.get("output") or {}).get("summary")
+    envelope = strict_json(summary.encode(), limit=32 * 1024) if isinstance(summary, str) else None
+    require(
+        envelope is not None and envelope.get("schema") == 4
+        and envelope.get("phase") in {"ADMITTED", "AGGREGATE_RESULT"}
+        and envelope.get("plan_digest") == plan["plan_digest"],
+        "ADMISSION_CHECK_ENVELOPE_INVALID",
+    )
+    receipt = envelope.get("receipt")
+    expected = {
+        "request_id": f"{GH_ID}/{plan['github']['run_id']}/1",
+        "plan_digest": plan["plan_digest"],
+        "request_spec_digest": plan["request_spec_digest"],
+        "source_snapshot_id": intent["bridge"]["source_snapshot_id"],
+        "dispatch_intent_id": intent["bridge"]["dispatch_intent_id"],
+    }
+    require(
+        isinstance(receipt, dict)
+        and set(receipt) == {
+            "request_id", "plan_digest", "request_spec_digest", "source_snapshot_id",
+            "dispatch_intent_id", "canonical_execution_id", "pr_generation",
+            "execution_generation", "publication_revision", "duplicate",
+        }
+        and all(receipt.get(k) == v for k, v in expected.items())
+        and isinstance(receipt.get("canonical_execution_id"), str) and bool(receipt["canonical_execution_id"])
+        and all(type(receipt.get(k)) is int and receipt[k] > 0 for k in
+                ("pr_generation", "execution_generation", "publication_revision"))
+        and receipt.get("duplicate") is False,
+        "ADMISSION_RECEIPT_IDENTITY_INVALID",
+    )
+    require(
+        (check.get("status") == "in_progress" and check.get("conclusion") is None)
+        or (
+            envelope["phase"] == "AGGREGATE_RESULT" and check.get("status") == "completed"
+            and check.get("conclusion") == (
+                "success" if (envelope.get("outcome") or {}).get("test_result") == "PASS" else "failure"
+            )
+        ),
+        "ADMISSION_CHECK_CONCLUSION_INVALID",
+    )
+    return receipt
+
+
+def current_control_matches(api, control):
+    try:
+        release(api, control)
+        return True
+    except ManualForwardError as error:
+        if str(error) in {
+            "GITCODE_CONTROL_CHANGED",
+            "GITHUB_CONTROL_CHANGED",
+            "GITHUB_WORKFLOW_NOT_APPROVED",
+            "GITHUB_NUMERIC_REPOSITORY_CHANGED",
+        }:
+            return False
+        raise
+
+
+def current_pr_matches(api, intent):
+    number = intent["pr"]["number"]
+    row = api.gc(f"/pulls/{number}")
+    if row.get("state") != "open" or row.get("merged_at"):
+        return False
+    try:
+        return snapshot(api, number) == intent["pr"]
+    except ManualForwardError as error:
+        if str(error) in {
+            "PR_NOT_OPEN", "PR_TARGET_NOT_MASTER", "PERSONAL_SOURCE_TARGET_ONLY",
+            "PR_CHANGED_DURING_CAPTURE", "PR_AUTHOR_NOT_ALLOWED",
+        }:
+            return False
+        raise
+
+
+
+
+def case_check(api, intent, plan, receipt, run_id, test_id, *, run_conclusion="failure", pr_matches=False):
     require(test_id in CASE_ORDER, "CASE_NOT_IN_FIXED_RESULT_SET")
     case_id = CASE_ORDER[test_id]
-    request_id = f"{GH_ID}/{run_id}/1"
-    rows, total = [], None
-    for page in range(1, 11):
-        query = urllib.parse.urlencode({
-            "app_id": 5575236, "filter": "all", "per_page": 100, "page": page
-        })
-        response = api.gh(f"/commits/{intent['control_sha']}/check-runs?{query}")
-        checks = response.get("check_runs")
-        count = response.get("total_count")
-        require(type(count) is int and 0 <= count <= 1000 and isinstance(checks, list) and len(checks) <= 100,
-                "CASE_CHECK_LIST_INVALID")
-        if total is None:
-            total = count
-        require(count == total, "CASE_CHECK_LIST_CHANGED")
-        rows.extend(checks)
-        if len(rows) >= total:
-            break
-    require(total is not None and len(rows) == total, "CASE_CHECK_LIST_INCOMPLETE")
-    prefix = f"lite-v4-{run_id}-1-{case_id}-"
-    matches = [row for row in rows if isinstance(row.get("name"), str) and row["name"].startswith(prefix)]
-    require(len(matches) == 1, "CASE_CHECK_MISSING_OR_AMBIGUOUS")
-    check = matches[0]
-    require(
-        type(check.get("id")) is int
-        and check.get("head_sha") == intent["control_sha"]
-        and (check.get("app") or {}).get("id") == 5575236
-        and check.get("details_url") == f"https://github.com/{GH_REPO}/actions/runs/{run_id}"
-        and isinstance(check.get("external_id"), str)
-        and check["external_id"].startswith("lite-actions:v4:"),
-        "CASE_CHECK_IDENTITY_MISMATCH",
-    )
+    if case_id not in plan["result_slots"]:
+        return {
+            "case_id": case_id, "test_id": test_id, "case_status": "NOT_RUN",
+            "reason": "Case was not selected by this immutable Plan",
+            "github_run_id": run_id,
+            "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
+            "case_check_url": None, "case_log_url": None,
+            "historical_only": True, "current_authority": "NOT_PROVIDED",
+            "current_pr_matches": pr_matches, "selected": False,
+        }
+    check = read_fixed_check(api, plan, case_id)
     html = check.get("html_url")
     require(
         isinstance(html, str)
@@ -428,91 +672,79 @@ def case_check(api, intent, run_id, test_id, *, run_conclusion="failure"):
             and run_conclusion in {"failure", "cancelled", "timed_out"},
             "CASE_CHECK_NOT_TERMINAL",
         )
-        require(
-            re.fullmatch(re.escape(prefix) + r"[0-9a-f]{12}", check.get("name", "")),
-            "CASE_CHECK_NAME_INVALID",
-        )
         return {
-            "case_id": case_id,
-            "test_id": test_id,
-            "case_status": "NOT_RUN",
+            "case_id": case_id, "test_id": test_id, "case_status": "NOT_RUN",
             "reason": "GitHub workflow concluded " + str(run_conclusion) + " before this Case published a terminal result",
             "github_run_id": run_id,
             "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
-            "case_check_url": html,
-            "case_log_url": html,
-            "check_id": check["id"],
+            "case_check_url": html, "case_log_url": html, "check_id": check["id"],
+            "historical_only": True, "current_authority": "NOT_PROVIDED",
+            "current_pr_matches": pr_matches,
         }
-    output = check.get("output") or {}
-    try:
-        envelope = json.loads(output.get("summary", ""))
-    except (TypeError, ValueError):
-        raise ManualForwardError("CASE_CHECK_SUMMARY_INVALID") from None
+    summary = (check.get("output") or {}).get("summary")
+    envelope = strict_json(summary.encode(), limit=32 * 1024) if isinstance(summary, str) else None
     require(
-        isinstance(envelope, dict)
-        and envelope.get("schema") == 4
+        envelope is not None and envelope.get("schema") == 4
         and envelope.get("phase") == "CASE_RESULT"
-        and envelope.get("result", {}).get("case_id") == case_id
-        and envelope.get("receipt", {}).get("request_id") == request_id,
-        "CASE_CHECK_IDENTITY_MISMATCH",
+        and envelope.get("plan_digest") == plan["plan_digest"]
+        and envelope.get("receipt") == receipt,
+        "CASE_CHECK_RECEIPT_OR_PLAN_MISMATCH",
     )
-    receipt = envelope["receipt"]
-    spec = receipt.get("request_spec_digest")
+    result = envelope.get("result")
+    expected_identity = {"pr": plan["pr"], "merge": plan["merge"], "control": plan["control"]}
     require(
-        isinstance(spec, str)
-        and re.fullmatch(r"[0-9a-f]{64}", spec)
-        and receipt.get("plan_digest") == envelope.get("plan_digest"),
-        "CASE_CHECK_SPEC_INVALID",
+        isinstance(result, dict)
+        and set(result) == {"case_id", "receipt", "identity", "status", "exit_code", "cleanup_verified", "summary"}
+        and result.get("case_id") == case_id
+        and result.get("receipt") == receipt
+        and canonical(result.get("identity")) == canonical(expected_identity)
+        and result.get("identity") == expected_identity,
+        "CASE_RESULT_EXECUTION_IDENTITY_MISMATCH",
     )
-    require(check["name"] == prefix + spec[:12], "CASE_CHECK_SPEC_MISMATCH")
-    expected_external = "lite-actions:v4:" + hashlib.sha256(canonical({
-        "repo_id": GH_ID,
-        "run_id": run_id,
-        "run_attempt": 1,
-        "case_id": case_id,
-        "request_spec_digest": spec,
-    })).hexdigest()
-    require(check.get("external_id") == expected_external, "CASE_CHECK_EXTERNAL_ID_MISMATCH")
-    result = envelope["result"]
     status = result.get("status")
     require(status in {"PASS", "FAIL", "INFRA_ERROR", "CANCELLED", "TIMED_OUT", "NOT_RUN", "RESOURCE_TIMEOUT"},
             "CASE_STATUS_INVALID")
     require(
-        set(result) == {"case_id", "receipt", "identity", "status", "exit_code", "cleanup_verified", "summary"}
-        and type(result.get("exit_code")) is int
-        and -255 <= result["exit_code"] <= 255
+        type(result.get("exit_code")) is int and -255 <= result["exit_code"] <= 255
         and type(result.get("cleanup_verified")) is bool
-        and isinstance(result.get("identity"), dict)
-        and isinstance(result.get("summary"), list)
-        and len(result["summary"]) <= 20
-        and all(isinstance(item, str) and len(item) <= 180 and not any(ord(c) < 32 for c in item) for item in result["summary"])
-        and result.get("receipt") == receipt
-        and (status != "PASS" or result["exit_code"] == 0),
+        and isinstance(result.get("summary"), list) and len(result["summary"]) <= 20
+        and all(isinstance(item, str) and len(item) <= 180 and not any(ord(c) < 32 for c in item) for item in result["summary"]),
         "CASE_RESULT_SHAPE_INVALID",
     )
     require(check.get("status") == "completed", "CASE_CHECK_NOT_TERMINAL")
-    expected_conclusion = (
-        "success" if status == "PASS" and result.get("cleanup_verified") is True
-        else "cancelled" if status == "CANCELLED"
-        else "timed_out" if status == "TIMED_OUT"
-        else "action_required" if status == "NOT_RUN"
-        else "failure"
-    )
-    require(check.get("conclusion") == expected_conclusion, "CASE_CHECK_CONCLUSION_MISMATCH")
+    if status == "PASS":
+        require(
+            result["cleanup_verified"] is True and result["exit_code"] == 0
+            and check.get("conclusion") == "success",
+            "CASE_PASS_EVIDENCE_MISMATCH",
+        )
+    else:
+        expected_conclusion = {
+            "CANCELLED": "cancelled",
+            "TIMED_OUT": "timed_out",
+            "NOT_RUN": "action_required",
+        }.get(status, "failure")
+        require(check.get("conclusion") == expected_conclusion, "CASE_CHECK_CONCLUSION_MISMATCH")
     return {
-        "case_id": case_id,
-        "test_id": test_id,
-        "case_status": status,
+        "case_id": case_id, "test_id": test_id, "case_status": status,
         "reason": "; ".join(result["summary"]) or status,
         "github_run_id": run_id,
         "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
-        "case_check_url": html,
-        "case_log_url": html,
-        "check_id": check["id"],
-        "plan_digest": envelope["plan_digest"],
-        "receipt": receipt,
+        "case_check_url": html, "case_log_url": html, "check_id": check["id"],
+        "plan_digest": plan["plan_digest"],
+        "pr_generation": receipt["pr_generation"],
+        "execution_generation": receipt["execution_generation"],
+        "publication_revision": receipt["publication_revision"],
+        "historical_only": True, "current_authority": "NOT_PROVIDED",
+        "current_pr_matches": pr_matches,
     }
 
+
+
+def result_exit_code(result):
+    # An audited legacy OS-only request has explicit NOT_RUN rows for the two
+    # unselected cases; they are not failed executions and must not break OS.
+    return 0 if result.get("case_status") == "PASS" or result.get("selected") is False else 1
 
 
 def result_main():
@@ -530,18 +762,40 @@ def result_main():
                 "github_run_id": None,
                 "github_run_url": None,
                 "case_log_url": None,
+                "historical_only": True,
+                "current_authority": "NOT_PROVIDED",
             }
             print(json.dumps(payload, sort_keys=True))
             return 1
-        intent = retrieve_intent(api, os.environ)
+        # Display-only read: authenticated capture/attempt/nonce is rechecked,
+        # but the initial 300s enrollment freshness window is not reapplied.
+        intent = retrieve_intent(api, os.environ, historical=True)
+        capture_run_id, capture_control = context(os.environ)
+        capture_run = run_identity(api, capture_run_id, capture_control)
+        require(
+            capture_run.get("status") in {"RUNNING", "COMPLETED"},
+            "HISTORICAL_CAPTURE_RUN_STATE_INVALID",
+        )
+        capture_conclusion = capture_run.get("conclusion")
+        require(
+            capture_conclusion in (None, "success", "failure", "cancelled", "timed_out", "action_required"),
+            "HISTORICAL_CAPTURE_CONCLUSION_INVALID",
+        )
         run_id = find_run(api, intent)
         require(run_id is not None, "EXACT_GITHUB_RUN_NOT_FOUND")
         run = api.gh(f"/actions/runs/{run_id}")
         validate_github_run(run, intent)
         require(run.get("status") == "completed", "GITHUB_RUN_NOT_TERMINAL")
-        result = case_check(api, intent, run_id, case, run_conclusion=run.get("conclusion"))
+        plan = read_plan_artifact(api, intent, run_id)
+        receipt = read_admission_receipt(api, plan, intent)
+        pr_matches = current_pr_matches(api, intent)
+        control_matches = current_control_matches(api, intent["control_sha"])
+        result = case_check(
+            api, intent, plan, receipt, run_id, case,
+            run_conclusion=run.get("conclusion"), pr_matches=pr_matches,
+        )
         print(json.dumps(result, sort_keys=True))
-        return 0 if result["case_status"] == "PASS" else 1
+        return result_exit_code(result)
     except Exception as error:
         code = str(error) if isinstance(error, ManualForwardError) else type(error).__name__
         payload = {
@@ -553,6 +807,8 @@ def result_main():
                 f"https://github.com/{GH_REPO}/actions/runs/{run_id}" if run_id else None
             ),
             "case_log_url": None,
+            "historical_only": True,
+            "current_authority": "NOT_PROVIDED",
         }
         print(json.dumps(payload, sort_keys=True))
         return 1
@@ -635,14 +891,16 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
                     and matches[0].get("run_attempt") == 1,
                     "GITHUB_FIXED_RESULT_JOB_NOT_PASS",
                 )
+            plan = read_plan_artifact(api, intent, run_id)
+            receipt = read_admission_receipt(api, plan, intent)
+            selected = [row["test_id"] for row in intent["selectors"]]
             case_results = [
-                case_check(api, intent, run_id, test_id, run_conclusion=run.get("conclusion")) for test_id in ALLOWED_CASES
+                case_check(api, intent, plan, receipt, run_id, test_id, run_conclusion=run.get("conclusion"))
+                for test_id in selected
             ]
             require(
-                len({item["plan_digest"] for item in case_results}) == 1
-                and all(item["receipt"] == case_results[0]["receipt"] for item in case_results)
-                and all(item["case_status"] == "PASS" for item in case_results),
-                "THREE_CASE_RESULT_SET_NOT_GREEN",
+                all(item["case_status"] == "PASS" for item in case_results),
+                "SELECTED_CASE_RESULT_SET_NOT_GREEN",
             )
             require(snapshot(api, intent["pr"]["number"]) == intent["pr"], "FINAL_PR_STALE")
             release(api, intent["control_sha"])

@@ -111,7 +111,6 @@ stages:
         )
         values = dict(env)
         values.update(
-            LITE_ACTIONS_GITHUB_TOKEN="${{ secrets.LITE_ACTIONS_GITHUB_TOKEN }}",
             RESULT_CASE=case_id,
             CAPTURE_RESULT="${{ needs.manual_capture.result }}",
         )

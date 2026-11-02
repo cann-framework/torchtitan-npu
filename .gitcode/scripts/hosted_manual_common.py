@@ -170,6 +170,40 @@ class API:
             return None
         return json.loads(raw)
 
+    def download_public_artifact(self, artifact_id):
+        path = f"/repos/{GH_REPO}/actions/artifacts/{artifact_id}/zip"
+        request = urllib.request.Request(
+            "https://api.github.com" + path,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "lite-gitcode-manual-readonly"},
+            method="GET",
+        )
+        try:
+            with self.opener.open(request, timeout=20) as response:
+                payload = response.read(1024 * 1024 + 1)
+        except urllib.error.HTTPError as error:
+            if error.code != 302:
+                raise ManualForwardError("API_GITHUB_PLAN_ARTIFACT_HTTP_" + str(error.code)) from None
+            location = error.headers.get("Location", "")
+            parsed = urllib.parse.urlparse(location)
+            require(
+                parsed.scheme == "https"
+                and parsed.hostname is not None
+                and parsed.hostname.endswith(".blob.core.windows.net")
+                and not parsed.username
+                and not parsed.password,
+                "GITHUB_PLAN_ARTIFACT_REDIRECT_UNTRUSTED",
+            )
+            request = urllib.request.Request(location, headers={"User-Agent": "lite-gitcode-manual-readonly"})
+            try:
+                with self.opener.open(request, timeout=20) as response:
+                    payload = response.read(1024 * 1024 + 1)
+            except Exception:
+                raise ManualForwardError("GITHUB_PLAN_ARTIFACT_BLOB_READ_FAILED") from None
+        except Exception:
+            raise ManualForwardError("GITHUB_PLAN_ARTIFACT_DOWNLOAD_FAILED") from None
+        require(isinstance(payload, bytes) and 0 < len(payload) <= 1024 * 1024, "GITHUB_PLAN_ARTIFACT_SIZE_INVALID")
+        return payload
+
     def gc(self, suffix="", *, version=5, body=None):
         require(version in (5, 8), "UNSUPPORTED_API_VERSION")
         return self.request("gitcode", f"/api/v{version}/repos/" + GC_REPO + suffix, body=body)
