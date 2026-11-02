@@ -62,6 +62,8 @@
     </li>
     <li class="toctree-l3"><a class="reference internal" href="#cpu">修改与 CPU 验证</a>
     </li>
+    <li class="toctree-l3"><a class="reference internal" href="#_5">流水线读取权限与失败定位</a>
+    </li>
         </ul>
     </li>
     </ul>
@@ -243,8 +245,8 @@ attempt 1。它不是原始 PR 事件适配器；不能用其成功结果授权�
 <li>确认个人 Actions 启用；注册后的 workflow ID 不从文件名猜测。</li>
 <li>明确授权配置 <code>LITE_ACTIONS_GITHUB_TOKEN</code>（仅目标组织仓 Actions write、Metadata
   read，短期有效），不使用 Checks App 私钥作为 dispatch 凭据。</li>
-<li>实测自动 <code>ATOMGIT_TOKEN</code> 能读取同仓 PR、run、jobs 和日志。当前只声明仓库/PR/项目
-  read 权限；若平台拒绝则停止并确认最小权限，不能暗中上传本地 PAT。</li>
+<li>实测自动 <code>ATOMGIT_TOKEN</code> 能读取同仓 PR、run、jobs 和日志。工作流声明仓库/PR/项目
+  read 及 <code>action: read</code>（仅读流水线）权限；若平台拒绝则停止并确认最小权限，不能暗中上传本地 PAT。</li>
 <li>GitHub 公开 API 的匿名读取受平台速率限制；限流/权限不足会失败关闭，不自动扩大
   token 权限。受保护 NPU 资源仍由 Blue lease/quarantine 控制，不在 Hosted job 使用。</li>
 </ul>
@@ -257,6 +259,15 @@ attempt 1。它不是原始 PR 事件适配器；不能用其成功结果授权�
 源脚本手工修改。<code>tests/unit_tests/tooling/gitcode_hosted/test_hosted_manual.py</code>
 使用合成 API 覆盖脚本/日志绑定、真实 SDK 编码契约、权限边界、单次派发恢复、超时及
 历史结果语义；不代表真实平台、NPU 或完整产品 UT。无需导入 torch 或初始化 NPU。</p>
+<h3 id="_5">流水线读取权限与失败定位</h3>
+<p>自动平台 token 的流水线读取域为 singular <code>action: read</code>，与 repository/project 的读取
+域不同，参见<a href="https://docs.gitcode.com/docs/help/home/org_project/pipeline/security-permissions/token-permissions/">官方 Token 权限表</a>。
+这不是 <code>action: write</code>，不授予运行其他流水线或修改配置权限；仍须实际运行确认 v8 API 能力。</p>
+<p><code>API.request</code> 的 HTTP 错误只输出固定服务/端点类别和状态码，例如
+<code>API_GITCODE_ACTION_RUN_HTTP_403</code>。不输出请求 URL、ID、响应体、header 或 token。
+首个 API 为同仓当前 run GET；该读取失败不说明 GitHub dispatch token 权限不足。
+若修改 common/capture 脚本，须重新生成工作流，并同步可信 <code>script_sha256</code> 与 U=C pin，
+不能把诊断格式更新视为无需版本核验的热补丁。</p>
               
             </div>
           </div><footer>
