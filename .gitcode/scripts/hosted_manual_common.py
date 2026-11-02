@@ -145,12 +145,14 @@ class API:
                 artifact_suffix = "/artifacts?name=lite-ci-request-1&per_page=10&page=1"
                 artifact_route = False
                 if path.startswith(artifact_prefix) and path.endswith(artifact_suffix):
-                    run_text = path[len(artifact_prefix):-len(artifact_suffix)]
+                    run_text = path[len(artifact_prefix) : -len(artifact_suffix)]
                     artifact_route = run_text.isascii() and run_text.isdigit() and int(run_text) > 0
-                allowed = artifact_route or bool(re.fullmatch(
-                    r"/repos/" + re.escape(GH_REPO) + r"/(?:actions/artifacts/[0-9]+|check-runs/[0-9]+)",
-                    path,
-                ))
+                allowed = artifact_route or bool(
+                    re.fullmatch(
+                        r"/repos/" + re.escape(GH_REPO) + r"/(?:actions/artifacts/[0-9]+|check-runs/[0-9]+)",
+                        path,
+                    )
+                )
                 require(allowed, "GITHUB_AUTHENTICATED_READ_ROUTE_NOT_ALLOWED")
                 require(
                     self.github_token and not any(ord(c) < 32 for c in self.github_token),
@@ -215,14 +217,17 @@ class API:
             location = error.headers.get("Location", "")
             parsed = urllib.parse.urlparse(location)
             host = parsed.hostname or ""
-            trusted_host = (
-                host.endswith(".blob.core.windows.net")
-                or host in {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
-            )
+            trusted_host = host.endswith(".blob.core.windows.net") or host in {
+                "release-assets.githubusercontent.com",
+                "objects.githubusercontent.com",
+            }
             require(
-                parsed.scheme == "https" and trusted_host
+                parsed.scheme == "https"
+                and trusted_host
                 and parsed.port in (None, 443)
-                and not parsed.username and not parsed.password and bool(parsed.query),
+                and not parsed.username
+                and not parsed.password
+                and bool(parsed.query),
                 "GITHUB_PLAN_ARTIFACT_REDIRECT_UNTRUSTED",
             )
             # Signed redirect stays in memory and is never logged.
@@ -248,8 +253,11 @@ class API:
 
     def gh(self, suffix, *, body=None, dispatch=False, authenticated_read=False):
         return self.request(
-            "github", "/repos/" + GH_REPO + suffix,
-            body=body, dispatch=dispatch, authenticated_read=authenticated_read,
+            "github",
+            "/repos/" + GH_REPO + suffix,
+            body=body,
+            dispatch=dispatch,
+            authenticated_read=authenticated_read,
         )
 
 
