@@ -7,9 +7,12 @@ resolve these from dispatch input or from the proposed source bundle.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 from ci_core.gitcode_contract import MODEL_REPOSITORIES
@@ -109,7 +112,7 @@ def prepare(*, environment, producer, intent, runner_path, workspace):
     return producer.prepare(run_id=run_id, intent=intent, runner_path=runner_path, workspace=workspace)
 
 
-def wait(
+def _wait(
     *,
     environment,
     reader,
@@ -120,6 +123,7 @@ def wait(
     timeout_seconds,
     poll_seconds=15,
     resolve_canonical=None,
+    monotonic=time.monotonic,
 ):
     """Only verified artifacts/fixed Check IDs determine the terminal outcome.
 
@@ -136,12 +140,46 @@ def wait(
         raise HostedError("INVALID_WAITER_BUDGET")
     expires = int(clock()) + timeout_seconds
     waiter = None
+    poll_sequence = 0
+    timing_logger = logging.getLogger("lite_actions.hosted_wait_timing")
+    # The production runtime uses `python3 -I -B runtime.py`; no logging config
+    # is loaded there. Configure only this dedicated logger, writing fixed
+    # sanitized records to stderr. Do not enable root/third-party INFO logging.
+    timing_logger.setLevel(logging.INFO)
+    timing_logger.propagate = False
+    if not any(getattr(handler, "_lite_actions_timing", False) for handler in timing_logger.handlers):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        handler._lite_actions_timing = True
+        timing_logger.addHandler(handler)
+
+    def timed(stage, sequence, operation):
+        started = monotonic()
+        try:
+            return operation()
+        finally:
+            elapsed_ms = max(0, round((monotonic() - started) * 1000))
+            # Fixed stage labels and numeric run/sequence IDs only. Never log
+            # responses, exceptions, request data, environment, or artifact URLs.
+            timing_logger.info(
+                "hosted_wait_timing stage=%s elapsed_ms=%d run_id=%d sequence=%d outcome=%s",
+                stage,
+                elapsed_ms,
+                run_id,
+                sequence,
+                "ok" if sys.exc_info()[0] is None else "error",
+            )
+
     while True:
         now = int(clock())
         if now >= expires:
             raise HostedError("HOSTED_WAITER_TIMEOUT")
         if waiter is None:
-            loaded = reader.load(run_id, Path(workspace), now=now)
+            loaded = timed(
+                "reader.load",
+                poll_sequence,
+                lambda now=now: reader.load(run_id, Path(workspace), now=now),
+            )
             if loaded is not None:
                 loaded.verify_files()
                 waiter = GitCodeWaiter(
@@ -155,11 +193,76 @@ def wait(
             now = int(clock())
             if now >= expires:
                 raise HostedError("HOSTED_WAITER_TIMEOUT")
-            outcome = waiter.poll(now=now)
+            poll_sequence += 1
+            outcome = timed("waiter.poll", poll_sequence, lambda waiter=waiter, now=now: waiter.poll(now=now))
             if int(clock()) >= expires:
                 raise HostedError("HOSTED_WAITER_TIMEOUT")
             if outcome["test_result"] != "PENDING":
                 return outcome
         remaining = expires - int(clock())
         if remaining > 0:
-            sleep(min(poll_seconds, remaining))
+            timed(
+                "sleep",
+                poll_sequence,
+                lambda remaining=remaining: sleep(min(poll_seconds, remaining)),
+            )
+
+
+def wait(
+    *,
+    environment,
+    reader,
+    workspace,
+    current,
+    clock,
+    sleep,
+    timeout_seconds,
+    poll_seconds=15,
+    resolve_canonical=None,
+    monotonic=time.monotonic,
+):
+    """Measure complete wait exit without exposing exception or result payloads."""
+    started = monotonic()
+    outcome, reason = "ERROR", "error"
+    try:
+        result = _wait(
+            environment=environment,
+            reader=reader,
+            workspace=workspace,
+            current=current,
+            clock=clock,
+            sleep=sleep,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+            resolve_canonical=resolve_canonical,
+            monotonic=monotonic,
+        )
+        value = result.get("test_result") if isinstance(result, dict) else None
+        outcome = value if value in {"PASS", "FAIL", "STALE", "PENDING"} else "ERROR"
+        reason = "terminal" if outcome != "ERROR" else "invalid_outcome"
+        return result
+    except HostedError as exc:
+        code = exc.args[0] if len(exc.args) == 1 and type(exc.args[0]) is str else ""
+        reason = "timeout" if code in {"HOSTED_WAITER_TIMEOUT"} else "hosted_error"
+        raise
+    except Exception:
+        reason = "error"
+        raise
+    finally:
+        logger = logging.getLogger("lite_actions.hosted_wait_timing")
+        if not any(getattr(handler, "_lite_actions_timing", False) for handler in logger.handlers):
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+            handler = logging.StreamHandler(sys.stderr)
+            handler.setFormatter(logging.Formatter("%(message)s"))
+            handler._lite_actions_timing = True
+            logger.addHandler(handler)
+        run_text = environment.get("GITHUB_RUN_ID", "")
+        safe_run_id = int(run_text) if isinstance(run_text, str) and re.fullmatch(r"[1-9][0-9]{0,19}", run_text) else 0
+        logger.info(
+            "hosted_wait_timing stage=wait.final elapsed_ms=%d run_id=%d outcome=%s reason=%s",
+            max(0, round((monotonic() - started) * 1000)),
+            safe_run_id,
+            outcome,
+            reason,
+        )
