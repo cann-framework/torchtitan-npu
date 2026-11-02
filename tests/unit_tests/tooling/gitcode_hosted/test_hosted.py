@@ -9,9 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[4]
-SPEC = importlib.util.spec_from_file_location(
-    "hosted", ROOT / ".github/scripts/lite_actions/gitcode/hosted.py"
-)
+SPEC = importlib.util.spec_from_file_location("hosted", ROOT / ".github/scripts/lite_actions/gitcode/hosted.py")
 hosted = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(hosted)
 
@@ -85,9 +83,7 @@ class HostedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "source.tar.gz"
             path.write_bytes(b"source")
-            with patch.object(
-                hosted.subprocess, "run", return_value=SimpleNamespace(stdout=b'{"id": 82}')
-            ) as run:
+            with patch.object(hosted.subprocess, "run", return_value=SimpleNamespace(stdout=b'{"id": 82}')) as run:
                 self.assertEqual(
                     hosted.ArtifactUploader(["node", "/trusted/upload.cjs"])("source-900-1", path),
                     82,
@@ -104,9 +100,7 @@ class HostedTests(unittest.TestCase):
             path = Path(directory) / "source.tar.gz"
             path.write_bytes(b"source")
             for reply in (b"progress", b'{"id": true}', b'{"id": 0}', b'{"id": 1, "extra": 2}'):
-                with patch.object(
-                    hosted.subprocess, "run", return_value=SimpleNamespace(stdout=reply)
-                ) as run:
+                with patch.object(hosted.subprocess, "run", return_value=SimpleNamespace(stdout=reply)) as run:
                     with self.assertRaises(OSError):
                         hosted.ArtifactUploader(["trusted"])("source-1", path)
                     self.assertEqual(run.call_count, 1)
@@ -178,25 +172,143 @@ class HostedTests(unittest.TestCase):
         args["timeout_seconds"] = 45
         ticks = iter(i * 0.005 for i in range(100))
         args["monotonic"] = lambda: next(ticks)
-        with (
-            patch.object(hosted, "GitCodeWaiter", return_value=waiter),
-            self.assertLogs(hosted.__name__, level="INFO") as captured,
-        ):
-            result = hosted.wait(**args)
+        import contextlib
+        import io
+        import logging
+
+        timing_logger = logging.getLogger("lite_actions.hosted_wait_timing")
+        old_handlers = timing_logger.handlers[:]
+        timing_logger.handlers.clear()
+        stream = io.StringIO()
+        try:
+            with (
+                patch.object(hosted, "GitCodeWaiter", return_value=waiter),
+                contextlib.redirect_stderr(stream),
+            ):
+                result = hosted.wait(**args)
+        finally:
+            timing_logger.handlers[:] = old_handlers
         self.assertEqual(result["test_result"], "PASS")
-        rows = [row for row in captured.output if row.startswith("INFO:")]
-        self.assertEqual(len(rows), 6)
+        rows = stream.getvalue().splitlines()
+        self.assertEqual(len(rows), 7)
         self.assertEqual(
             [row.split("stage=", 1)[1].split()[0] for row in rows],
-            ["reader.load", "sleep", "reader.load", "waiter.poll", "sleep", "waiter.poll"],
+            ["reader.load", "sleep", "reader.load", "waiter.poll", "sleep", "waiter.poll", "wait.final"],
         )
         for row in rows:
             self.assertRegex(
                 row,
-                r"hosted_wait_timing stage=(reader\.load|waiter\.poll|sleep) elapsed_ms=\d+ run_id=900 sequence=\d+$",
+                (
+                    r"hosted_wait_timing stage=(reader\.load|waiter\.poll|sleep) "
+                    r"elapsed_ms=\d+ run_id=900 sequence=\d+ outcome=(ok|error)$|"
+                    r"hosted_wait_timing stage=wait\.final elapsed_ms=\d+ "
+                    r"run_id=900 outcome=PASS reason=terminal$"
+                ),
             )
             self.assertNotRegex(row, r"https?://|[?&](token|signature)=|secret|response|Authorization")
         self.assertEqual(args["poll_seconds"], 15)
+
+    def test_real_runtime_cjs_python_isolated_cli_emits_safe_wait_timing(self):
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        control_source = ROOT / ".github/scripts/lite_actions/gitcode"
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            control = base / "control"
+            action = control / ".github/scripts/lite_actions/gitcode"
+            action.mkdir(parents=True)
+            for name in ("runtime.py", "runtime.cjs", "hosted.py", "upload_artifact.cjs"):
+                shutil.copy2(control_source / name, action / name)
+            (control / ".github/scripts/lite_actions/gitcode/__init__.py").write_text("")
+            subprocess.run(["git", "init", "-q", str(control)], check=True)
+            subprocess.run(["git", "-C", str(control), "config", "user.name", "test"], check=True)
+            subprocess.run(["git", "-C", str(control), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(control), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(control), "commit", "-qm", "fixture"], check=True)
+            control_sha = subprocess.check_output(["git", "-C", str(control), "rev-parse", "HEAD"], text=True).strip()
+
+            sdk = base / "sdk"
+            core = sdk / "ci_core"
+            core.mkdir(parents=True)
+            (core / "__init__.py").write_text("")
+            (core / "gitcode_contract.py").write_text(
+                "MODEL_REPOSITORIES = {1210038933: ('cann-framework/torchtitan-npu', 'master')}\n"
+            )
+            (core / "gitcode_waiter.py").write_text(
+                "class GitCodeWaiter:\n"
+                " def __init__(self, *a, **k): self.plan={'deadline':9999999999}\n"
+                " def poll(self, *, now): return {'test_result':'PASS'}\n"
+            )
+            (core / "gitcode_assembly.py").write_text(
+                "from types import SimpleNamespace\n"
+                "import logging\n"
+                "logging.getLogger('unrelated.third_party').info('THIRD_PARTY_INFO_SENTINEL')\n"
+                "class Loaded:\n def __init__(self): self.verified=object()\n def verify_files(self): pass\n"
+                "class Reader:\n"
+                " def __init__(self, policy): self.policy=policy; self.channel=object()\n"
+                " def load(self, *a, **k): return Loaded()\n"
+                "def assemble_hosted(config_path, *, environment, upload, state_directory):\n"
+                " p=SimpleNamespace(github_repo_id=1210038933, "
+                "control_sha=environment['GITHUB_SHA'], enabled=True, "
+                "workflow_path='.github/workflows/lite_actions_dispatcher_smoke.yml', "
+                "max_duration_seconds=30)\n"
+                " return SimpleNamespace(policy=p, reader=Reader(p), current=lambda p: True, resolve_canonical=None)\n"
+            )
+            subprocess.run(["git", "init", "-q", str(sdk)], check=True)
+            subprocess.run(["git", "-C", str(sdk), "config", "user.name", "test"], check=True)
+            subprocess.run(["git", "-C", str(sdk), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(sdk), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(sdk), "commit", "-qm", "fake trusted sdk"], check=True)
+            sdk_sha = subprocess.check_output(["git", "-C", str(sdk), "rev-parse", "HEAD"], text=True).strip()
+
+            wrapper = base / "invoke.cjs"
+            wrapper.write_text(
+                "const {run}=require(process.argv[2]);\n"
+                "process.exitCode=run({...process.env,\n"
+                "'INPUT_PHASE':'wait',\n"
+                "'INPUT_RELEASE-CONFIG':JSON.stringify({authority_protocol:'artifact-check-v1',sdk_sha:process.env.SDK_SHA}),\n"
+                "'INPUT_GITCODE-REQUEST':JSON.stringify({workflow_path:'.github/workflows/lite_actions_dispatcher_smoke.yml'}),\n"
+                "'INPUT_SDK-ROOT':process.env.SDK_ROOT,'INPUT_SDK-SHA':process.env.SDK_SHA,\n"
+                "'INPUT_GITHUB-TOKEN':'synthetic-gh-secret','INPUT_GITCODE-TOKEN':'synthetic-gc-secret'});\n"
+            )
+            env = {
+                **os.environ,
+                "SDK_ROOT": str(sdk),
+                "SDK_SHA": sdk_sha,
+                "RUNNER_TEMP": str(base),
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_REPOSITORY": "cann-framework/torchtitan-npu",
+                "GITHUB_REPOSITORY_ID": "1210038933",
+                "GITHUB_REF": "refs/heads/master",
+                "GITHUB_SHA": control_sha,
+                "GITHUB_WORKFLOW_SHA": control_sha,
+                "GITHUB_WORKFLOW_REF": (
+                    "cann-framework/torchtitan-npu/"
+                    ".github/workflows/lite_actions_dispatcher_smoke.yml@refs/heads/master"
+                ),
+                "GITHUB_RUN_ID": "900",
+            }
+            result = subprocess.run(
+                ["node", str(wrapper), str(action / "runtime.cjs")],
+                cwd=base,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('"test_result": "PASS"', result.stdout)
+            self.assertIn("hosted_wait_timing stage=reader.load", result.stderr)
+            self.assertIn("hosted_wait_timing stage=waiter.poll", result.stderr)
+            self.assertIn("hosted_wait_timing stage=wait.final", result.stderr)
+            self.assertNotIn("synthetic-gh-secret", result.stdout + result.stderr)
+            self.assertNotIn("synthetic-gc-secret", result.stdout + result.stderr)
+            self.assertNotIn("THIRD_PARTY_INFO_SENTINEL", result.stdout + result.stderr)
+            self.assertNotRegex(result.stdout + result.stderr, r"https?://|[?&](token|signature)=")
 
     def test_wait_timeout_never_infers_success_from_absent_artifact(self):
         reader = Mock(policy=self.policy)
@@ -251,9 +363,7 @@ class HostedTests(unittest.TestCase):
                 "console.log('sdk progress'); return {id: 91}; }}"
             )
             uploader = root / "upload_artifact.cjs"
-            uploader.write_bytes(
-                (ROOT / ".github/scripts/lite_actions/gitcode/upload_artifact.cjs").read_bytes()
-            )
+            uploader.write_bytes((ROOT / ".github/scripts/lite_actions/gitcode/upload_artifact.cjs").read_bytes())
             source = root / "source.tar.gz"
             source.write_bytes(b"opaque source; never executable")
             capture = root / "args.json"
@@ -360,14 +470,10 @@ class HostedDependencyTests(unittest.TestCase):
                         "ACTIONS_RUNTIME_TOKEN": "synthetic-artifact-credential",
                     },
                 ),
-                patch.object(
-                    hosted.subprocess, "run", return_value=SimpleNamespace(stdout=b'{"id": 82}')
-                ) as run,
+                patch.object(hosted.subprocess, "run", return_value=SimpleNamespace(stdout=b'{"id": 82}')) as run,
             ):
                 self.assertEqual(
-                    hosted.ArtifactUploader(["node", "/trusted/upload.cjs"])(
-                        "source-900-1", source
-                    ),
+                    hosted.ArtifactUploader(["node", "/trusted/upload.cjs"])("source-900-1", source),
                     82,
                 )
                 actual = run.call_args.kwargs["env"]
