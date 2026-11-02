@@ -91,8 +91,12 @@ def select_pipeline_cases(workflow_path, case_ids=None):
 
 
 def execute(*, environment, number, expected_head="", case_ids=None, factory=None, clock=time.time, sleep=time.sleep):
-    trigger = environment.get("LITE_ACTIONS_GITCODE_EVENT_NAME", "manual")
-    if trigger not in {"manual", "workflow_dispatch"}:
+    # The hosted platform reports "Manual", not "workflow_dispatch". Native
+    # metadata must not be silently replaced by a caller-supplied manual alias.
+    triggers = [
+        environment[name] for name in ("LITE_ACTIONS_GITCODE_EVENT_NAME", "ATOMGIT_EVENT_NAME") if environment.get(name)
+    ]
+    if any(trigger not in {"manual", "workflow_dispatch", "Manual"} for trigger in triggers):
         # A current H/B match is not proof of the original Action snapshot:
         # observed A -> B -> A must never green a delayed A Action.
         raise ValueError("REAL_ACTION_IDENTITY_ADAPTER_REQUIRED")

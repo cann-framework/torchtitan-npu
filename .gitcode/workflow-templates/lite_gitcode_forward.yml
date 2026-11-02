@@ -21,7 +21,7 @@ stages:
         name: TorchTitan GitCode Forward
         if: >-
           atomgit.event_name == 'pull_request_target' ||
-          (atomgit.event_name == 'workflow_dispatch' && atomgit.ref == 'refs/heads/master')
+          (atomgit.event_name == 'Manual' && atomgit.ref == 'refs/heads/master')
         # Hosted control job only; never provision a native runner on Blue.
         # The entrypoint rejects PR events until original-Action provenance and
         # durable pull-channel binding are implemented and verified.
