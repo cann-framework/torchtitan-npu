@@ -43,6 +43,18 @@
                 <li class="toctree-l1"><a class="reference internal" href="../../architecture/">torchtitan-npu 架构边界</a>
                 </li>
               </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../gitcode-forward-hosted-candidate/">TorchTitan GitCode Hosted 控制候选：尚未上线</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../gitcode-forward-personal-prevalidation/">个人 GitCode / 组织 GitHub 控制预验证</a>
+                </li>
+              </ul>
+              <ul>
+                <li class="toctree-l1"><a class="reference internal" href="../../gitcode-forward-upstream-integration/">Upstream integration baseline (2026-11-02)</a>
+                </li>
+              </ul>
               <p class="caption"><span class="caption-text">Community</span></p>
               <ul>
                   <li class="toctree-l1"><a class="reference internal" href="../../community/governance/">社区治理</a>
@@ -298,6 +310,8 @@
   <code>sparse_lightning_indexer_kl_loss_grad_metadata</code> 得到的四条 metadata（每 microbatch 一次），
   在 <code>aicpu_metadata</code> 下按消费它的 kernel 分组、按方向取值：<code>sparse_attn.fwd</code> /
   <code>sparse_attn.bwd</code> 与 <code>lightning_indexer.fwd</code> / <code>lightning_indexer.bwd</code>。就这些——一方向一份。
+  arch22（A3）上少建其中一条：该 SoC 的 <code>lightning_indexer</code> 自己算调度、前向按 <code>metadata=None</code>
+  调用，所以 <code>lightning_indexer.fwd</code> 为 <code>None</code>；其余三条（含 SLIKG 反向记录）两个 SoC 都要建。
   <code>sparse_attn.asc</code> 逐层按 <code>(端口类, compress_ratio)</code> 取自己的 entry，直接读
   <code>aicpu_metadata.sparse_attn.fwd</code> 等字段：一条 entry 就是一个几何，没有按 topk 或按几何查表的步骤。
   几何（heads/head dim/indexer 三数）是该 config 自己的必填字段、无默认值，由 override 的五个参数
@@ -315,8 +329,8 @@
 <p>DeepSeek-V4 的 <code>CompressedSparseInnerAttention.Config.build_attention_metadata</code> 由模型目录的
   <code>build_v4_metadata</code> 建好这个几何的 entry（一条 entry 一个 ratio）：整行 document 边界、按自身
   <code>compress_ratio</code> 折好的池网格，以及三个 kernel frame（<code>q</code>/<code>swa_k</code>/<code>cmp_k</code>）——frame 属于模型
-  metadata（<code>models/common/metadata.py</code>），参考内核和融合端口读同一份，entry 另带 CP 的 <code>cp</code> 计划
-  （<code>CPDeepSeekMetadata(restore)</code>）。<code>AscCompressedSparseInnerAttention.Config</code>
+  metadata（<code>models/deepseek_v4/metadata.py</code>），参考内核和融合端口读同一份，entry 另带 CP 的 <code>cp</code> 计划
+  （<code>CPMetadata(restore)</code>）。<code>AscCompressedSparseInnerAttention.Config</code>
   在其上只补四个算子的记录；<code>sparse_attn.asc</code> 桥接 SparseFlashMLA/SMLAG 的正反向，
   <code>lightning_indexer.asc</code> 桥接 <code>lightning_indexer</code>/<code>sparse_lightning_indexer_kl_loss_grad</code> 的正反向，
   几何（heads/head dim）是该 config 自己的必填字段、无默认值，由 override 参数一次写入，默认值即
