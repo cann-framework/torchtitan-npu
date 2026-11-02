@@ -1,0 +1,54 @@
+# TorchTitan GitCode Hosted 控制候选：尚未上线
+
+本候选提供可信 GitHub Hosted Prepare/Waiter 编排，以及本机控制端 Bridge 工具。实际验收目标是个人 Fork 向 CANN 官方仓提交 PR；个人仓内部 PR、CPU 测试或 P0 上下文探针不等于该链路验收。官方控制发布及 U=C 校验仍未完成。
+
+## 当前实现与兼容边界
+
+Smoke/Nightly 的 `source_provider=gitcode` 分支使用独立的 `prepare-gitcode`、`wait-gitcode` Job。原生 Smoke 继续使用官方 schema-2 `pipeline` 接口；Nightly 的 schema-3 接口使用独立 `lite_actions_common_v3.yml`。不替换已有 A3/A5 调用者。上游历史和冲突处理见 [集成基线](gitcode-forward-upstream-integration.md)。
+
+本地 Node 24 JavaScript Action 调用 `runtime.py`，使上传器获得平台提供的 Artifact runtime 环境，而不是假设普通 shell 步骤具有上传凭据。控制代码与 Worker SDK 均固定为审核后的 SHA；拒绝已修改的跟踪文件、额外文件和可用于 Python 导入遮蔽的符号链接。仅控制 checkout 的固定 npm 依赖目录允许额外安装文件，SDK 没有该例外。Python 使用隔离模式，不执行 PR Source Bundle 的 Python。
+
+Prepare 构建独立可信 Runner Bundle，再调用 SDK Producer；Producer 生成 H/B 合并结果、固定 Check IDs 和不可变 Artifact 引用，最后发布 Request。只有该 Job 成功，外部 Worker 才能准入。原生 GitHub rerun 被拒绝；同一 Job 的控制进程不自动以空 journal 重启。
+
+Waiter 必须使用 `authority_protocol=artifact-check-v1`，通过现有 Artifact/固定 Check Pull 通道取得绑定请求、receipt 和发布代际的新鲜证明。不增加 Blue HTTP listener，不以当前 H/B 或历史绿色 aggregate 替代当前发布权。非 PASS、过期或不明确结果不会将 GitHub 汇总 Job 标为成功。
+
+可选 `gitcode_attestation` 输入只负责运输已有签名信封：Prepare 检查其 intent 绑定后，在 Request 之前上传 `dispatch-attestation-<run>-1`，唯一成员为 `attestation.json`。Blue SDK 独立验证签名和原始事件证据；这里不生成签名，也不将新读取的 PR 状态伪装为旧事件快照。
+
+## 配置与凭据边界
+
+以下为代码读取的名称，不代表已创建、已批准或已验证的部署配置。
+
+| 用途 | GitHub 名称 | 约束 |
+|---|---|---|
+| Worker SDK | Variable `LITE_GITCODE_SDK_SHA` | 完整审核后提交 SHA，与 release JSON 一致 |
+| 可信发布配置 | Variables `LITE_GITCODE_SMOKE_RELEASE`、`LITE_GITCODE_NIGHTLY_RELEASE` | 严格采用对应 SDK 的配置 schema，不能来自 Dispatch/PR 输入 |
+| GitCode 只读身份核验 | Secret `LITE_GITCODE_AUTHORITY_TOKEN` | 仅可信控制端，不能进入 Source/Runner Bundle 或 NPU 环境 |
+| 创建结果对象 | Secret `LITE_GITCODE_CHECKS_APP_KEY` | 仅 Prepare；与 Blue 使用相同审核后 App ID |
+
+Prepare 将 App Key 临时写入权限 `0600` 的控制文件，通过 `LITE_ACTIONS_CHECKS_KEY_FILE` 交给 SDK signer，并在退出时删除。Blue 使用单独保护的绝对路径文件及同名环境变量；密钥不进入 release JSON、Git 或日志。Waiter/Bridge 只读 Check 对象，仍核验对象上的真实 App ID，但不需要 App 私钥。GitCode 状态发布使用另行批准的发布身份，不能把 Checks App Key 当作其他协议签名密钥。
+
+`@actions/artifact` 固定为 6.3.1，传递依赖由 lockfile 固定；仅在控制目录执行 `npm ci --ignore-scripts --no-audit --no-fund`。上传子进程不继承 GitHub/GitCode/App 凭据或 `NODE_OPTIONS`。此前锁文件审计为 0 high、0 critical、7 moderate；不是依赖审计全绿。
+
+## 自动 GitCode Action 仍有明确阻塞
+
+`.gitcode/scripts/lite_gitcode_forward.py` 的当前可执行范围是显式本机控制操作，依赖与 Blue 共享的持久 authority/coordinator 状态。它不适合直接放到无共享状态的官方托管 runner 上，也不要求在 Blue 注册新的原生自托管 runner。
+
+未取得原始事件/run/attempt/快照归属证据时，自动 PR Action 在创建 intent、dispatch 之前拒绝执行；不会转成 periodic 观察而错误地为迟到 A→B→A 事件返回成功。尚未启用的 YAML 位于非注册目录 `.gitcode/workflow-templates/`。完成官方托管 P0 探针及可信事件适配后，必须继续实现和审核自动入口；不能以长期禁用代替交付。
+
+任何新的签名配置需要独立审批；签名本身不证明事件时序。版本绑定结果仍是 `versioned_only`，不是原子合并许可。
+
+## 验证与未执行项
+
+以下定向命令在集成基线及本次代码上通过，共 121 个 CPU 测试；它们使用 SDK/API fixtures，不是实时平台或 NPU 执行：
+
+```bash
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 PYTHONPATH=/path/to/reviewed-lite-actions:$PWD \
+python3 -m pytest --noconftest -q \
+  tests/unit_tests/tooling/lite_actions \
+  tests/unit_tests/tooling/gitcode_hosted \
+  .github/scripts/lite_actions/gitcode/tests \
+  tests/unit_tests/test_lite_actions_dispatch_smoke.py \
+  tests/unit_tests/models/deepseek_v4/test_nightly_flash_recipes.py
+```
+
+新增 Python 的 Ruff/format/compile、Node 语法、两份 GitHub Workflow 的 actionlint 和 diff 检查通过。完整产品 UT、NPU、实际 Artifact/Checks、GitCode 自动 Action、官方发布同步及生产迁移未执行；完整 pre-commit 未通过验证，不能用定向 lint 替代。部署前还须核验平台身份、跨 Fork 来源与目标仓、权限、原始事件证据、固定 SDK、实际 Git builder 版本和回滚路径。

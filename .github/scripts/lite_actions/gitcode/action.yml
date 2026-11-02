@@ -1,0 +1,33 @@
+name: Trusted GitCode Hosted
+description: Schema-4 Prepare and fixed-ID Waiter from the verified control commit
+inputs:
+  phase:
+    description: prepare or wait
+    required: true
+  release-config:
+    description: Reviewed deployment JSON, never dispatch or PR supplied
+    required: true
+  gitcode-request:
+    description: Untrusted bounded dispatch intent, independently validated
+    required: true
+  gitcode-attestation:
+    description: Optional pre-signed original-Action envelope; Worker verifies it
+    required: false
+  sdk-root:
+    description: Absolute checkout path of the pinned Worker SDK
+    required: true
+  sdk-sha:
+    description: Reviewed immutable Worker SDK SHA
+    required: true
+  github-token:
+    description: Repository-scoped non-Checks API credential
+    required: true
+  gitcode-token:
+    description: GitCode authority credential, control domain only
+    required: true
+  checks-key:
+    description: Prepare-only dedicated Checks App key; Waiter never receives it
+    required: false
+runs:
+  using: node24
+  main: runtime.cjs

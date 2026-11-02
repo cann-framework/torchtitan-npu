@@ -1,0 +1,158 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+name: Nightly
+run-name: ${{ inputs.source_provider == 'gitcode' && format('lite-gitcode:{0}', fromJSON(inputs.gitcode_request).bridge.bridge_nonce) || github.workflow }}
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      source_provider:
+        description: GitHub native or trusted GitCode Bridge
+        type: choice
+        options: [github, gitcode]
+        default: github
+      gitcode_request:
+        description: Bounded immutable Bridge dispatch intent JSON
+        type: string
+        required: false
+      gitcode_attestation:
+        description: Signed original-Action envelope, not a newly sampled PR snapshot
+        type: string
+        required: false
+      test_cases:
+        description: JSON test_id/suite selectors; empty uses defaults
+        type: string
+        required: false
+permissions:
+  contents: read
+  actions: read
+  checks: read
+jobs:
+  ci:
+    if: inputs.source_provider != 'gitcode'
+    uses: ./.github/workflows/lite_actions_common_v3.yml
+    with:
+      workflow: nightly_fulltests.yml
+      default_cases: '[{"suite":"a3_8p_tests"},{"suite":"a3_16p_tests"}]'
+      test_cases: ${{ inputs.test_cases }}
+      default_worker: blue
+      default_target_pool: a3_shared_blue
+      default_docker: cann_master_torchtitan_master_xyj
+  result:
+    name: Lite-Actions-Nightly
+    if: always() && inputs.source_provider != 'gitcode'
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CI_RESULT: ${{ needs.ci.result }}
+        run: test "$CI_RESULT" = success
+
+  prepare-gitcode:
+    name: prepare-gitcode
+    if: >-
+      github.repository == 'cann-framework/torchtitan-npu' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_provider == 'gitcode' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Reject native reruns and unpinned deployment
+        env:
+          SDK_SHA: ${{ vars.LITE_GITCODE_SDK_SHA }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          test "$ATTEMPT" = 1 || { echo "Use a new trusted GitCode Bridge rerun"; exit 1; }
+          [[ "$SDK_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: depeng1994/lite-actions
+          ref: ${{ vars.LITE_GITCODE_SDK_SHA }}
+          path: worker-sdk
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Install locked control-only artifact SDK
+        working-directory: control/.github/scripts/lite_actions/gitcode
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: prepare immutable GitCode request
+        uses: ./control/.github/scripts/lite_actions/gitcode
+        with:
+          phase: prepare
+          release-config: ${{ vars.LITE_GITCODE_NIGHTLY_RELEASE }}
+          gitcode-request: ${{ inputs.gitcode_request }}
+          gitcode-attestation: ${{ inputs.gitcode_attestation }}
+          sdk-root: ${{ github.workspace }}/worker-sdk
+          sdk-sha: ${{ vars.LITE_GITCODE_SDK_SHA }}
+          github-token: ${{ github.token }}
+          gitcode-token: ${{ secrets.LITE_GITCODE_AUTHORITY_TOKEN }}
+          checks-key: ${{ secrets.LITE_GITCODE_CHECKS_APP_KEY }}
+
+  wait-gitcode:
+    name: wait-gitcode
+    if: >-
+      github.repository == 'cann-framework/torchtitan-npu' &&
+      github.event_name == 'workflow_dispatch' &&
+      inputs.source_provider == 'gitcode' &&
+      github.ref == 'refs/heads/master'
+    needs: prepare-gitcode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Reject native reruns and unpinned deployment
+        env:
+          SDK_SHA: ${{ vars.LITE_GITCODE_SDK_SHA }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          test "$ATTEMPT" = 1 || { echo "Use a new trusted GitCode Bridge rerun"; exit 1; }
+          [[ "$SDK_SHA" =~ ^[0-9a-f]{40}$ ]]
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: depeng1994/lite-actions
+          ref: ${{ vars.LITE_GITCODE_SDK_SHA }}
+          path: worker-sdk
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Install locked control-only artifact SDK
+        working-directory: control/.github/scripts/lite_actions/gitcode
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: wait immutable GitCode request
+        uses: ./control/.github/scripts/lite_actions/gitcode
+        with:
+          phase: wait
+          release-config: ${{ vars.LITE_GITCODE_NIGHTLY_RELEASE }}
+          gitcode-request: ${{ inputs.gitcode_request }}
+          gitcode-attestation: ${{ inputs.gitcode_attestation }}
+          sdk-root: ${{ github.workspace }}/worker-sdk
+          sdk-sha: ${{ vars.LITE_GITCODE_SDK_SHA }}
+          github-token: ${{ github.token }}
+          gitcode-token: ${{ secrets.LITE_GITCODE_AUTHORITY_TOKEN }}
+
+  gitcode-result:
+    name: Lite-Actions-GitCode-Nightly
+    if: always() && inputs.source_provider == 'gitcode'
+    needs: [prepare-gitcode, wait-gitcode]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          CI_RESULT: ${{ needs.wait-gitcode.result }}
+          CI_PREPARE: ${{ needs.prepare-gitcode.result }}
+        run: test "$CI_RESULT" = success && test "$CI_PREPARE" = success
