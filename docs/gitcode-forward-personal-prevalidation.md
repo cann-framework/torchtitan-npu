@@ -119,3 +119,15 @@ python3 -B .gitcode/scripts/build_hosted_manual_workflow.py
 首个 API 为同仓当前 run GET；该读取失败不说明 GitHub dispatch token 权限不足。
 若修改 common/capture 脚本，须重新生成工作流，并同步可信 `script_sha256` 与 U=C pin，
 不能把诊断格式更新视为无需版本核验的热补丁。
+
+### 平台步骤包络
+
+GitCode v8 job detail 的 `steps` 包含平台步骤，不能直接把数组长度等于 1 当作
+“只有一个用户步骤”。当前验证器除原单用户步骤形态外，仅接受实测的固定三步：
+`official_pre_step`（初始化步骤、sequence 0）、唯一固定 `official_shell`
+（sequence 1）、`official_post_step`（后处理步骤、sequence 2）。
+平台步骤必须同 job、已完成、ID 唯一；identifier、inputs、env、condition 必须显式
+为 null；缺字段、空列表、额外 script/command 字段、重复或重排步骤均拒绝。
+用户脚本 hash、shell、工作目录、完整 job/log 双读及年龄校验不放宽，捕获时间必须
+取实际用户步骤而非初始化步骤。去秘密真实 API fixture 和负例位于
+`tests/unit_tests/tooling/gitcode_hosted/fixtures/gitcode_b472_platform_steps.json`。

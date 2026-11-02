@@ -743,6 +743,64 @@ stages:
               CAPTURE_SCRIPT_SHA256 = "b764af67fa1f45754482a60d3fab6976dca7210260f5a2b7ad922a720efaaa99"
 
 
+              PLATFORM_STEP_KEYS = {
+                  "business_type",
+                  "condition",
+                  "continue-on-error",
+                  "daily_build_number",
+                  "end_time",
+                  "endpoint_ids",
+                  "env",
+                  "icon_url",
+                  "id",
+                  "identifier",
+                  "inputs",
+                  "job_run_id",
+                  "last_dispatch_id",
+                  "message",
+                  "multi_step_editable",
+                  "name",
+                  "official_task_version",
+                  "runtime_attribution",
+                  "sequence",
+                  "start_time",
+                  "status",
+                  "task",
+                  "timeout-minutes",
+              }
+
+
+              def capture_user_step(steps, job_id):
+                  require(isinstance(steps, list) and len(steps) in (1, 3), "CAPTURE_JOB_NOT_SINGLE_STEP")
+                  if len(steps) == 1:
+                      return steps[0]
+                  require(all(isinstance(step, dict) for step in steps), "CAPTURE_PLATFORM_STEP_INVALID")
+                  require(len({ident(step.get("id")) for step in steps}) == 3, "CAPTURE_PLATFORM_STEP_IDS_DUPLICATE")
+                  require(
+                      all(type(step.get("sequence")) is int for step in steps) and [step["sequence"] for step in steps] == [0, 1, 2],
+                      "CAPTURE_PLATFORM_STEP_ORDER",
+                  )
+                  for step, task, name in (
+                      (steps[0], "official_pre_step", "初始化步骤"),
+                      (steps[2], "official_post_step", "后处理步骤"),
+                  ):
+                      require(
+                          not (set(step) - PLATFORM_STEP_KEYS)
+                          and {"identifier", "inputs", "env", "condition"}.issubset(step)
+                          and step.get("task") == task
+                          and step.get("name") == name
+                          and step.get("identifier") is None
+                          and step.get("job_run_id") == job_id
+                          and step.get("status") == "COMPLETED"
+                          and step.get("inputs") is None
+                          and step.get("env") is None
+                          and step.get("condition") is None
+                          and step.get("continue-on-error") in (None, False),
+                          "CAPTURE_PLATFORM_STEP_INVALID",
+                      )
+                  return steps[1]
+
+
               def fixed_capture_job(api, run_id):
                   listing = api.gc("/actions/runs/" + run_id + "/jobs", version=8)
                   jobs = listing.get("jobs")
@@ -764,8 +822,7 @@ stages:
                       "CAPTURE_JOB_NOT_COMPLETE",
                   )
                   steps = job.get("steps")
-                  require(isinstance(steps, list) and len(steps) == 1, "CAPTURE_JOB_NOT_SINGLE_STEP")
-                  step = steps[0]
+                  step = capture_user_step(steps, job_id)
                   expected = {
                       "identifier": CAPTURE_STEP,
                       "name": CAPTURE_NAME,
@@ -911,7 +968,7 @@ stages:
                       "CAPTURE_BRIDGE_MISMATCH",
                   )
                   at = payload["captured_at"]
-                  step = job["steps"][0]
+                  step = capture_user_step(job["steps"], job["id"])
                   start, end, run_start = step.get("start_time"), step.get("end_time"), run.get("start_time")
                   require(
                       type(at) is int

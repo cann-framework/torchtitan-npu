@@ -251,6 +251,54 @@ class HostedManualTests(unittest.TestCase):
         with self.assertRaisesRegex(common.ManualForwardError, "CHANGED_DURING"):
             self.emit()
 
+    def platform_steps(self):
+        fixture = json.loads((Path(__file__).parent / "fixtures/gitcode_b472_platform_steps.json").read_text())
+        steps = []
+        for row in fixture["steps"]:
+            step = {key: value for key, value in row.items() if key not in {"keys", "inputs_type", "env_type"}}
+            step["job_run_id"] = "job1"
+            step["env"] = None
+            if step["task"] == "official_shell":
+                step["inputs"] = copy.deepcopy(self.api.job["steps"][0]["inputs"])
+                step["start_time"], step["end_time"] = 995000, 1001000
+            steps.append(step)
+        return steps
+
+    def test_real_platform_pre_user_post_envelope_selects_only_fixed_user_step(self):
+        expected = self.emit()
+        self.api.job["steps"] = self.platform_steps()
+        self.assertEqual(dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now), expected)
+
+    def test_platform_step_envelope_rejects_payload_reorder_extra_and_wrong_owner(self):
+        self.emit()
+        original = self.platform_steps()
+        for field, value in (
+            ("inputs", [{"key": "script", "value": "evil"}]),
+            ("inputs", []),
+            ("env", []),
+            ("condition", "true"),
+            ("task", "official_shell"),
+            ("job_run_id", "other"),
+            ("name", "custom"),
+            ("identifier", "0"),
+            ("status", "FAILED"),
+            ("continue-on-error", True),
+            ("script", "evil"),
+        ):
+            self.api.job["steps"] = copy.deepcopy(original)
+            self.api.job["steps"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(common.ManualForwardError):
+                dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
+        for missing in ("identifier", "inputs", "env", "condition"):
+            self.api.job["steps"] = copy.deepcopy(original)
+            del self.api.job["steps"][0][missing]
+            with self.subTest(missing=missing), self.assertRaises(common.ManualForwardError):
+                dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
+        for rows in (original[::-1], [*original, original[0]], [original[0], original[1], original[1]]):
+            self.api.job["steps"] = rows
+            with self.assertRaises(common.ManualForwardError):
+                dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
+
     def test_duplicate_marker_extra_step_or_command_change_rejected(self):
         self.emit()
         self.api.log *= 2
