@@ -174,6 +174,7 @@ class HostedManualTests(unittest.TestCase):
     def test_two_job_generated_workflow_is_exact_and_secret_is_dispatch_only(self):
         content, digest = builder.render()
         self.assertEqual(builder.OUTPUT.read_text(), content)
+        self.assertTrue(all(line == line.rstrip() for line in content.splitlines()))
         doc = yaml.load(content, Loader=yaml.BaseLoader)
         self.assertEqual(set(doc["on"]), {"workflow_dispatch"})
         jobs = doc["stages"]["manual"]["jobs"]
@@ -189,6 +190,9 @@ class HostedManualTests(unittest.TestCase):
             self.assertIn("python3 -I -B", step["run"])
             self.assertNotIn("from hosted_manual_common", step["run"])
         self.assertEqual(hashlib.sha256(jobs["manual_capture"]["steps"][0]["run"].encode()).hexdigest(), digest)
+        capture_script, forward_script, _ = builder.scripts()
+        self.assertEqual(jobs["manual_capture"]["steps"][0]["run"], capture_script)
+        self.assertEqual(jobs["manual_forward"]["steps"][0]["run"], forward_script)
 
     def test_capture_matches_real_sdk_emission_and_verifier(self):
         from ci_core.gitcode_manual_capture import ManualCapturePolicy, encode_capture, verify_manual_capture

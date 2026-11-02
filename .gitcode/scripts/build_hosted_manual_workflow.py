@@ -95,7 +95,9 @@ stages:
             values["LITE_ACTIONS_GITHUB_TOKEN"] = "${{ secrets.LITE_ACTIONS_GITHUB_TOKEN }}"
         for field, value in values.items():
             header += "              " + field + ": " + value + "\n"
-        header += "            run: |\n" + "".join("              " + line + "\n" for line in script.splitlines())
+        header += "            run: |\n" + "".join(
+            ("              " + line if line else "") + "\n" for line in script.splitlines()
+        )
     return header, digest
 
 

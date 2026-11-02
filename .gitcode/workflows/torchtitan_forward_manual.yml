@@ -46,14 +46,14 @@ stages:
             run: |
               python3 -I -B - <<'PY'
               """Bounded standard-library control; generated inline, never imports PR source."""
-              
+
               import json
               import re
               import sys
               import urllib.error
               import urllib.parse
               import urllib.request
-              
+
               GC_REPO = "depeng1994/torchtitan-npu"
               GC_ID = "9075802"
               GH_REPO = "cann-framework/torchtitan-npu"
@@ -67,31 +67,31 @@ stages:
               PREFIX = "LITE_GITCODE_MANUAL_CAPTURE_V1 "
               ALLOWED_ACTOR = "depeng1994"
               ALLOWED_CASES = {"worker_os_blue", "dispatch_smoke_8p"}
-              
-              
+
+
               class ManualForwardError(RuntimeError):
                   """Only fixed non-secret reason codes may be emitted."""
-              
-              
+
+
               def require(value, code):
                   if not value:
                       raise ManualForwardError(code)
-              
-              
+
+
               def canonical(value):
                   return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
-              
-              
+
+
               def sha(value):
                   require(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value), "INVALID_SHA")
                   return value
-              
-              
+
+
               def ident(value):
                   require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value), "INVALID_PLATFORM_ID")
                   return value
-              
-              
+
+
               def ref(value):
                   require(isinstance(value, str) and 0 < len(value) <= 200, "INVALID_REF")
                   require(
@@ -101,19 +101,19 @@ stages:
                   )
                   require(not value.startswith(("/", "-")) and not value.endswith(("/", ".", ".lock")), "INVALID_REF")
                   return value
-              
-              
+
+
               class NoRedirect(urllib.request.HTTPRedirectHandler):
                   def redirect_request(self, req, fp, code, msg, headers, newurl):
                       return None
-              
-              
+
+
               class API:
                   def __init__(self, environment):
                       self.gitcode_token = environment.get("ATOMGIT_TOKEN", "")
                       self.github_token = environment.get("LITE_ACTIONS_GITHUB_TOKEN", "")
                       self.opener = urllib.request.build_opener(NoRedirect())
-              
+
                   def request(self, service, path, *, body=None, dispatch=False):
                       require(
                           path.startswith("/")
@@ -184,15 +184,15 @@ stages:
                       if not raw:
                           return None
                       return json.loads(raw)
-              
+
                   def gc(self, suffix="", *, version=5, body=None):
                       require(version in (5, 8), "UNSUPPORTED_API_VERSION")
                       return self.request("gitcode", f"/api/v{version}/repos/" + GC_REPO + suffix, body=body)
-              
+
                   def gh(self, suffix, *, body=None, dispatch=False):
                       return self.request("github", "/repos/" + GH_REPO + suffix, body=body, dispatch=dispatch)
-              
-              
+
+
               def context(environment):
                   require(
                       environment.get("EVENT_NAME") == "Manual" and environment.get("ATOMGIT_EVENT_NAME", "Manual") == "Manual",
@@ -209,8 +209,8 @@ stages:
                   require(environment.get("REF") == "refs/heads/master", "DEFAULT_BRANCH_ONLY")
                   require(environment.get("ACTOR") == ALLOWED_ACTOR, "MANUAL_OPERATOR_NOT_ALLOWED")
                   return ident(environment.get("ATOMGIT_RUN_ID")), sha(environment.get("CONTROL_SHA"))
-              
-              
+
+
               def branch(api, name):
                   row = api.gc("/branches/" + urllib.parse.quote(ref(name), safe=""))
                   require(row.get("name") == name, "BRANCH_IDENTITY_CHANGED")
@@ -218,16 +218,16 @@ stages:
                   value = sha(commit.get("id"))
                   require("sha" not in commit or commit["sha"] == value, "BRANCH_SHA_CONFLICT")
                   return value
-              
-              
+
+
               def repository(api):
                   row = api.gc()
                   require(
                       str(row.get("id")) == GC_ID and row.get("full_name") == GC_REPO and row.get("default_branch") == "master",
                       "GITCODE_REPOSITORY_CHANGED",
                   )
-              
-              
+
+
               def release(api, control):
                   github_repository = api.gh("")
                   require(
@@ -248,8 +248,8 @@ stages:
                       and workflow.get("state") == "active",
                       "GITHUB_WORKFLOW_NOT_APPROVED",
                   )
-              
-              
+
+
               def pr_fields(row, number):
                   require(row.get("number") == number and row.get("state") == "open" and not row.get("merged_at"), "PR_NOT_OPEN")
                   require((row.get("user") or {}).get("login") == ALLOWED_ACTOR, "PR_AUTHOR_NOT_ALLOWED")
@@ -267,8 +267,8 @@ stages:
                       "base_ref": "master",
                       "actor": ALLOWED_ACTOR,
                   }
-              
-              
+
+
               def snapshot(api, number):
                   require(type(number) is int and 0 < number < 2**31, "INVALID_PR_NUMBER")
                   repository(api)
@@ -287,8 +287,8 @@ stages:
                       "base_ref": "master",
                       "base_sha": base,
                   }
-              
-              
+
+
               def run_identity(api, run_id, control):
                   run = api.gc("/actions/runs/" + ident(run_id), version=8)
                   expected = {
@@ -305,24 +305,24 @@ stages:
                   )
                   require(run.get("status") in ("RUNNING", "COMPLETED"), "GITCODE_RUN_NOT_LIVE")
                   return run
-              
-              
+
+
               def emit_failure(error):
                   code = str(error) if isinstance(error, ManualForwardError) else type(error).__name__
                   print("MANUAL_FORWARD_FAILED:" + code, file=sys.stderr)
                   return 1
-              
+
               """Appended to reviewed common code inside the dedicated capture-only step."""
-              
+
               import base64
               import hashlib
               import os
               import re
               import secrets
               import time
-              
-              
-              
+
+
+
               def capture(environment, api, *, clock=time.time, nonce_factory=lambda: secrets.token_hex(24)):
                   run_id, control = context(environment)
                   case = environment.get("TEST_CASE")
@@ -362,19 +362,19 @@ stages:
                   payload = canonical({"schema": 1, "kind": "manual-current-observation", "captured_at": at, "intent": intent})
                   require(len(payload) <= 24 * 1024, "CAPTURE_TOO_LARGE")
                   return PREFIX + hashlib.sha256(payload).hexdigest() + " " + base64.b64encode(payload).decode()
-              
-              
+
+
               def main():
                   try:
                       print(capture(os.environ, API(os.environ)))
                       return 0
                   except Exception as error:
                       return emit_failure(error)
-              
-              
+
+
               if __name__ == "__main__":
                   raise SystemExit(main())
-              
+
               PY
       manual_forward:
         name: manual_forward
@@ -399,14 +399,14 @@ stages:
             run: |
               python3 -I -B - <<'PY'
               """Bounded standard-library control; generated inline, never imports PR source."""
-              
+
               import json
               import re
               import sys
               import urllib.error
               import urllib.parse
               import urllib.request
-              
+
               GC_REPO = "depeng1994/torchtitan-npu"
               GC_ID = "9075802"
               GH_REPO = "cann-framework/torchtitan-npu"
@@ -420,31 +420,31 @@ stages:
               PREFIX = "LITE_GITCODE_MANUAL_CAPTURE_V1 "
               ALLOWED_ACTOR = "depeng1994"
               ALLOWED_CASES = {"worker_os_blue", "dispatch_smoke_8p"}
-              
-              
+
+
               class ManualForwardError(RuntimeError):
                   """Only fixed non-secret reason codes may be emitted."""
-              
-              
+
+
               def require(value, code):
                   if not value:
                       raise ManualForwardError(code)
-              
-              
+
+
               def canonical(value):
                   return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
-              
-              
+
+
               def sha(value):
                   require(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value), "INVALID_SHA")
                   return value
-              
-              
+
+
               def ident(value):
                   require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value), "INVALID_PLATFORM_ID")
                   return value
-              
-              
+
+
               def ref(value):
                   require(isinstance(value, str) and 0 < len(value) <= 200, "INVALID_REF")
                   require(
@@ -454,19 +454,19 @@ stages:
                   )
                   require(not value.startswith(("/", "-")) and not value.endswith(("/", ".", ".lock")), "INVALID_REF")
                   return value
-              
-              
+
+
               class NoRedirect(urllib.request.HTTPRedirectHandler):
                   def redirect_request(self, req, fp, code, msg, headers, newurl):
                       return None
-              
-              
+
+
               class API:
                   def __init__(self, environment):
                       self.gitcode_token = environment.get("ATOMGIT_TOKEN", "")
                       self.github_token = environment.get("LITE_ACTIONS_GITHUB_TOKEN", "")
                       self.opener = urllib.request.build_opener(NoRedirect())
-              
+
                   def request(self, service, path, *, body=None, dispatch=False):
                       require(
                           path.startswith("/")
@@ -537,15 +537,15 @@ stages:
                       if not raw:
                           return None
                       return json.loads(raw)
-              
+
                   def gc(self, suffix="", *, version=5, body=None):
                       require(version in (5, 8), "UNSUPPORTED_API_VERSION")
                       return self.request("gitcode", f"/api/v{version}/repos/" + GC_REPO + suffix, body=body)
-              
+
                   def gh(self, suffix, *, body=None, dispatch=False):
                       return self.request("github", "/repos/" + GH_REPO + suffix, body=body, dispatch=dispatch)
-              
-              
+
+
               def context(environment):
                   require(
                       environment.get("EVENT_NAME") == "Manual" and environment.get("ATOMGIT_EVENT_NAME", "Manual") == "Manual",
@@ -562,8 +562,8 @@ stages:
                   require(environment.get("REF") == "refs/heads/master", "DEFAULT_BRANCH_ONLY")
                   require(environment.get("ACTOR") == ALLOWED_ACTOR, "MANUAL_OPERATOR_NOT_ALLOWED")
                   return ident(environment.get("ATOMGIT_RUN_ID")), sha(environment.get("CONTROL_SHA"))
-              
-              
+
+
               def branch(api, name):
                   row = api.gc("/branches/" + urllib.parse.quote(ref(name), safe=""))
                   require(row.get("name") == name, "BRANCH_IDENTITY_CHANGED")
@@ -571,16 +571,16 @@ stages:
                   value = sha(commit.get("id"))
                   require("sha" not in commit or commit["sha"] == value, "BRANCH_SHA_CONFLICT")
                   return value
-              
-              
+
+
               def repository(api):
                   row = api.gc()
                   require(
                       str(row.get("id")) == GC_ID and row.get("full_name") == GC_REPO and row.get("default_branch") == "master",
                       "GITCODE_REPOSITORY_CHANGED",
                   )
-              
-              
+
+
               def release(api, control):
                   github_repository = api.gh("")
                   require(
@@ -601,8 +601,8 @@ stages:
                       and workflow.get("state") == "active",
                       "GITHUB_WORKFLOW_NOT_APPROVED",
                   )
-              
-              
+
+
               def pr_fields(row, number):
                   require(row.get("number") == number and row.get("state") == "open" and not row.get("merged_at"), "PR_NOT_OPEN")
                   require((row.get("user") or {}).get("login") == ALLOWED_ACTOR, "PR_AUTHOR_NOT_ALLOWED")
@@ -620,8 +620,8 @@ stages:
                       "base_ref": "master",
                       "actor": ALLOWED_ACTOR,
                   }
-              
-              
+
+
               def snapshot(api, number):
                   require(type(number) is int and 0 < number < 2**31, "INVALID_PR_NUMBER")
                   repository(api)
@@ -640,8 +640,8 @@ stages:
                       "base_ref": "master",
                       "base_sha": base,
                   }
-              
-              
+
+
               def run_identity(api, run_id, control):
                   run = api.gc("/actions/runs/" + ident(run_id), version=8)
                   expected = {
@@ -658,15 +658,15 @@ stages:
                   )
                   require(run.get("status") in ("RUNNING", "COMPLETED"), "GITCODE_RUN_NOT_LIVE")
                   return run
-              
-              
+
+
               def emit_failure(error):
                   code = str(error) if isinstance(error, ManualForwardError) else type(error).__name__
                   print("MANUAL_FORWARD_FAILED:" + code, file=sys.stderr)
                   return 1
-              
+
               """Appended to common code; only this job receives the GH dispatch credential."""
-              
+
               import base64
               import hashlib
               import json
@@ -674,12 +674,12 @@ stages:
               import re
               import time
               import urllib.parse
-              
-              
+
+
               # Replaced by the deterministic workflow generator, not by workflow inputs.
               CAPTURE_SCRIPT_SHA256 = "527ecc19846d3e30f2ab67557f41e0fc66d5838a8fabb63e81feef09908778ad"
-              
-              
+
+
               def fixed_capture_job(api, run_id):
                   listing = api.gc("/actions/runs/" + run_id + "/jobs", version=8)
                   jobs = listing.get("jobs")
@@ -728,8 +728,8 @@ stages:
                       "CAPTURE_COMMAND_NOT_PINNED",
                   )
                   return job, ident(step.get("id"))
-              
-              
+
+
               def capture_log(api, run_id, job_id, step_id):
                   offset, size, texts = 0, 0, []
                   for _ in range(10):
@@ -756,8 +756,8 @@ stages:
                       if not more:
                           return "".join(texts)
                   raise ManualForwardError("CAPTURE_LOG_INCOMPLETE")
-              
-              
+
+
               def retrieve_intent(api, environment, *, clock=time.time):
                   run_id, control = context(environment)
                   run = run_identity(api, run_id, control)
@@ -874,8 +874,8 @@ stages:
                   release(api, control)
                   require(int(clock()) - at <= 300 and int(clock()) < intent["deadline"], "CAPTURE_EXPIRED_DURING_READ")
                   return intent
-              
-              
+
+
               def validate_github_run(run, intent):
                   require(type(run.get("id")) is int and run["id"] > 0, "GITHUB_RUN_ID_INVALID")
                   expected = {
@@ -895,8 +895,8 @@ stages:
                       "GITHUB_RUN_OWNER_MISMATCH",
                   )
                   return run["id"]
-              
-              
+
+
               def find_run(api, intent):
                   query = urllib.parse.urlencode(
                       {
@@ -917,8 +917,8 @@ stages:
                   matches = [row for row in rows if row.get("display_title") == "lite-gitcode:" + intent["bridge"]["bridge_nonce"]]
                   require(len(matches) <= 1, "GITHUB_NONCE_AMBIGUOUS")
                   return validate_github_run(matches[0], intent) if matches else None
-              
-              
+
+
               def forward(api, intent, *, clock=time.time, sleep=time.sleep):
                   require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
                   release(api, intent["control_sha"])
@@ -989,8 +989,8 @@ stages:
                           }
                       sleep(min(30, max(0, intent["deadline"] - int(clock()))))
                   raise ManualForwardError("MANUAL_DEADLINE_EXCEEDED")
-              
-              
+
+
               def main():
                   try:
                       api = API(os.environ)
@@ -999,9 +999,9 @@ stages:
                       return 0
                   except Exception as error:
                       return emit_failure(error)
-              
-              
+
+
               if __name__ == "__main__":
                   raise SystemExit(main())
-              
+
               PY
