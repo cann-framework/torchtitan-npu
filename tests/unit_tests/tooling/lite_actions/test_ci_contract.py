@@ -29,8 +29,8 @@ def load(name, path):
 class CIContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.prep = load("prepare", ROOT / ".github/scripts/lite_actions/prepare_request_v3.py")
-        cls.waiter = load("waiter", ROOT / ".github/scripts/lite_actions/wait_result_v3.py")
+        cls.prep = load("prepare", ROOT / ".github/scripts/lite_actions/prepare_request.py")
+        cls.waiter = load("waiter", ROOT / ".github/scripts/lite_actions/wait_result.py")
 
     def cases(self):
         return self.prep.expand_cases([dict(suite="a3_8p_tests")], D)
@@ -146,21 +146,21 @@ class CIContract(unittest.TestCase):
             with self.subTest(lines=lines):
                 self.assertIsNone(self.waiter.find_result([comment({**result, "last_20_lines": lines})], **args))
 
-    def test_versioned_v3_caller_does_not_replace_legacy_workflows(self):
+    def test_only_two_business_workflows_and_no_schedule(self):
         callers = []
         for p in (ROOT / ".github/workflows").glob("*.yml"):
             data = yaml.load(p.read_text(), Loader=yaml.BaseLoader)
             for job in data.get("jobs", {}).values():
-                if job.get("uses") == "./.github/workflows/lite_actions_common_v3.yml":
+                if job.get("uses") == "./.github/workflows/lite_actions_common.yml":
                     callers.append(p.name)
-        self.assertEqual(set(callers), {"nightly_fulltests.yml"})
+        self.assertEqual(set(callers), {"nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"})
         for name in callers:
             data = yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
             self.assertEqual(set(data["on"]), {"pull_request", "workflow_dispatch"})
             self.assertIn("result", data["jobs"])
 
     def test_common_keeps_exact_sha_matrix_and_bounded_waiter(self):
-        p = ROOT / ".github/workflows/lite_actions_common_v3.yml"
+        p = ROOT / ".github/workflows/lite_actions_common.yml"
         text = p.read_text()
         data = yaml.load(text, Loader=yaml.BaseLoader)
         self.assertEqual(data["jobs"]["case"]["strategy"]["fail-fast"], "false")
@@ -238,12 +238,12 @@ class CIContract(unittest.TestCase):
 
     def test_callers_own_environment_defaults_and_nightly_preserves_16p(self):
         root = ROOT / ".github/workflows"
-        common = yaml.load((root / "lite_actions_common_v3.yml").read_text(), Loader=yaml.BaseLoader)
+        common = yaml.load((root / "lite_actions_common.yml").read_text(), Loader=yaml.BaseLoader)
         for key in ("default_worker", "default_target_pool", "default_docker"):
             field = common["on"]["workflow_call"]["inputs"][key]
             self.assertEqual(field["required"], "true")
             self.assertNotIn("default", field)
-        for filename in ("nightly_fulltests.yml",):
+        for filename in ("nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"):
             data = yaml.load((root / filename).read_text(), Loader=yaml.BaseLoader)
             self.assertTrue(
                 all(

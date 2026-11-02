@@ -34,7 +34,7 @@ permissions:
 jobs:
   ci:
     if: inputs.source_provider != 'gitcode'
-    uses: ./.github/workflows/lite_actions_common_v3.yml
+    uses: ./.github/workflows/lite_actions_common.yml
     with:
       workflow: nightly_fulltests.yml
       default_cases: '[{"suite":"a3_8p_tests"},{"suite":"a3_16p_tests"}]'

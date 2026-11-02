@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).resolve().parents[4] / ".github/scripts/lite_actions/prepare_request_v3.py"
+SCRIPT = Path(__file__).resolve().parents[4] / ".github/scripts/lite_actions/prepare_request.py"
 CASE = {"test_id": "dsv4_flash_a3_8p_example"}
 
 

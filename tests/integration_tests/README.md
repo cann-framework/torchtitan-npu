@@ -290,7 +290,7 @@ python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite
 为了保证内网物理 NPU 集群的执行安全，防止恶意 PR 注入未经审查的代码，CI 调度实行**受控安全准入**机制：
 
 ### 3.1 组织仓 PR 自动 CI 触发
-1. **自动触发**：所有面向 `torchtitan-npu/torchtitan-npu:master` 提交的 PR（含来自外部 Fork 仓库的 PR）会自动触发组织仓的 GitHub Actions 工作流；
+1. **自动触发**：所有面向 `cann-framework/torchtitan-npu:master` 提交的 PR（含来自外部 Fork 仓库的 PR）会自动触发组织仓的 GitHub Actions 工作流；
 2. **安全防护**：
    - 外部 Fork 的首次 PR 受 GitHub 官方的 Workflow 审批策略保护（需要 Maintainer 批准运行）；
    - 调度机根据 PR API 严格比对 PR 编号、目标分支以及精确的 Head Commit SHA，坚决拒绝过期或关联异常的 Run；
@@ -302,11 +302,11 @@ python3 -m tests.integration_tests.tools.lite_actions.entrypoint inspect --suite
 
 ```bash
 # 执行 A3 8P 全部用例（Muon + AdamW 独立 Matrix Case，资源不重叠即可并发）
-gh workflow run a3_8p_lite_actions.yml -R torchtitan-npu/torchtitan-npu --ref master \
+gh workflow run nightly_fulltests.yml -R cann-framework/torchtitan-npu --ref master \
   -f 'test_cases=[{"suite":"a3_8p_tests"}]'
 
 # 仅执行指定 16P 用例
-gh workflow run a3_16p_lite_actions.yml -R torchtitan-npu/torchtitan-npu --ref master \
+gh workflow run nightly_fulltests.yml -R cann-framework/torchtitan-npu --ref master \
   -f 'test_cases=[{"test_id":"dsv4_flash_a3_16p_example"}]'
 ```
 
@@ -339,3 +339,38 @@ python -m tests.integration_tests.run_tests /tmp/engram-hf-output \
 仅验证 Engram 联合分片 HF 路径时，在上述命令追加
 `--test_name dsv41_engram_mxfp8_hf_ep2_efsdp2`。该用例保持相同的 native/HF
 加载后参数、MXFP8 缓存及三步 loss/grad_norm 精确比较，不加入默认 CI smoke。
+
+
+## Lite Actions 2.0 调度配置与手动 Smoke
+
+两个业务入口为 `nightly_fulltests.yml` 与 `lite_actions_dispatcher_smoke.yml`，均支持面向 master 的 PR 和手动触发，不增加定时任务。
+Nightly 默认包含 `a3_8p_tests` 和 `a3_16p_tests`：8P Muon、8P AdamW、双节点 16P AdamW 均做五步真实训练；通信 Smoke 不替代训练覆盖。
+Dispatcher-Smoke 默认包含 Blue 系统探测和 8P/16P HCCL Smoke；Yellow 仅显式选择，A5/64P 不因此启用。
+
+业务 Workflow 显式配置 `default_worker`、`default_target_pool`、`default_docker`；公共 Workflow 将三者设为必填，不另设运行环境默认值。
+Python `ci_overrides` 按字段覆盖，例如 `ci_overrides={"docker": "另一个已登记环境"}`，未提供的字段继承业务 Workflow。
+`ci_kind` 区分 `train`、`npu_smoke` 和 `worker_probe`。资源数量由 `nnodes`、`ngpu` 定义，Smoke 不按测试名称识别，world size 为两者乘积。
+执行超时来自用例的 `timeout`；排队、准备、清理和 Actions 总时限是不同阶段的预算，不与执行超时混用。
+
+Blue 默认环境为 `cann_master_torchtitan_master_xyj`，通过 Worker 持久化配置绑定已有容器；A3 用例使用该容器的 `/usr/local/Ascend/ascend-toolkit/set_env.sh`。
+16P 训练要求两个节点均通过训练资产与依赖预检，并在 Worker 配置中允许 `train`；不能仅通过修改能力标记代替环境准备。
+完整计划使用 schema 3，绑定 repository、SHA、run、attempt、plan digest 和逐 case 身份。两仓独立实现校验，以固定 JSON 协议样例验证兼容，不要求 Python 源码逐字节镜像。
+每个 case 最多回传 20 行、每行 180 字符，并保留 Comment/请求体大小限制；Summary 只包含配置与状态。
+
+### 手动多节点通信 Smoke
+
+手动执行前自行确认设备和端口不与 Worker 或其他任务冲突，并在每台节点先加载 CANN。两端使用相同的通信 IP 顺序与端口，`NODE_RANK` 分别为 0 和 1：
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+# 按实际环境设置 ASCEND_RT_VISIBLE_DEVICES；只使用已确认空闲且未被租用的设备。
+NODE_IPS=192.0.2.1,192.0.2.2 NODE_RANK=0 NNODES=2 NGPU=8 \
+LITE_CI_MASTER_PORT=16002 LITE_CI_HCCL_IF_BASE_PORT=20256 \
+LITE_CI_HCCL_HOST_PORT_RANGE=24256-24319 LITE_CI_HCCL_NPU_PORT_RANGE=28256-28319 \
+python3 -m tests.integration_tests.tools.lite_actions.entrypoint launch \
+  --test-id dispatch_smoke_16p --output-dir /tmp/manual-smoke-node0
+```
+
+将文档示例 IP 替换为实际通信 IP，第二节点使用 `NODE_RANK=1` 及自己的新输出目录。
+手动多节点运行必须显式提供 `LITE_CI_MASTER_PORT`，不再根据 job hash 猜测或抢占端口。单节点手动 Smoke 可以不传节点/端口，使用 torchrun standalone。
+正式 CI 必须收到完整调度器端口租约和 `NODE_IPS`，缺失立即报配置错误；不能退化为 standalone 或另一套端口分配。
