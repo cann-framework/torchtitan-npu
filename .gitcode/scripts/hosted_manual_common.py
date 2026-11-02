@@ -56,6 +56,35 @@ def ref(value):
     return value
 
 
+def api_route_label(service, path, *, dispatch=False):
+    # Only fixed labels: never interpolate user-controlled URLs, IDs, headers or bodies.
+    if service == "gitcode":
+        if "/actions/runs/" in path:
+            if path.endswith("/logs"):
+                return "GITCODE_ACTION_STEP_LOGS"
+            if "/jobs/" in path:
+                return "GITCODE_ACTION_JOB"
+            if path.endswith("/jobs"):
+                return "GITCODE_ACTION_JOBS"
+            return "GITCODE_ACTION_RUN"
+        if "/pulls/" in path:
+            return "GITCODE_PR"
+        if "/branches/" in path:
+            return "GITCODE_BRANCH"
+        return "GITCODE_REPOSITORY"
+    if dispatch:
+        return "GITHUB_WORKFLOW_DISPATCH"
+    if "/actions/runs/" in path:
+        return "GITHUB_RUN_JOBS" if "/jobs?" in path else "GITHUB_RUN"
+    if "/runs?" in path:
+        return "GITHUB_NONCE_LOOKUP"
+    if "/actions/workflows/" in path:
+        return "GITHUB_WORKFLOW"
+    if "/branches/" in path:
+        return "GITHUB_BRANCH"
+    return "GITHUB_REPOSITORY"
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -132,7 +161,9 @@ class API:
             with self.opener.open(request, timeout=20) as response:
                 raw = response.read(1024 * 1024 + 1)
         except urllib.error.HTTPError as error:
-            raise ManualForwardError("API_HTTP_" + str(error.code)) from None
+            raise ManualForwardError(
+                "API_" + api_route_label(service, path, dispatch=dispatch) + "_HTTP_" + str(error.code)
+            ) from None
         require(len(raw) <= 1024 * 1024, "API_RESPONSE_TOO_LARGE")
         if not raw:
             return None

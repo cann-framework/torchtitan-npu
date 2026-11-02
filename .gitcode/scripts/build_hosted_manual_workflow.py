@@ -51,6 +51,7 @@ on:
         options: [worker_os_blue, dispatch_smoke_8p]
         default: worker_os_blue
 permissions:
+  action: read
   repository: read
   pr: read
   project: read

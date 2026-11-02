@@ -88,8 +88,8 @@ GitCode v8 的日志时间戳只允许按已实测格式剥离一次；任意前
 - 确认个人 Actions 启用；注册后的 workflow ID 不从文件名猜测。
 - 明确授权配置 `LITE_ACTIONS_GITHUB_TOKEN`（仅目标组织仓 Actions write、Metadata
   read，短期有效），不使用 Checks App 私钥作为 dispatch 凭据。
-- 实测自动 `ATOMGIT_TOKEN` 能读取同仓 PR、run、jobs 和日志。当前只声明仓库/PR/项目
-  read 权限；若平台拒绝则停止并确认最小权限，不能暗中上传本地 PAT。
+- 实测自动 `ATOMGIT_TOKEN` 能读取同仓 PR、run、jobs 和日志。工作流声明仓库/PR/项目
+  read 及 `action: read`（仅读流水线）权限；若平台拒绝则停止并确认最小权限，不能暗中上传本地 PAT。
 - GitHub 公开 API 的匿名读取受平台速率限制；限流/权限不足会失败关闭，不自动扩大
   token 权限。受保护 NPU 资源仍由 Blue lease/quarantine 控制，不在 Hosted job 使用。
 
@@ -107,3 +107,15 @@ python3 -B .gitcode/scripts/build_hosted_manual_workflow.py
 源脚本手工修改。`tests/unit_tests/tooling/gitcode_hosted/test_hosted_manual.py`
 使用合成 API 覆盖脚本/日志绑定、真实 SDK 编码契约、权限边界、单次派发恢复、超时及
 历史结果语义；不代表真实平台、NPU 或完整产品 UT。无需导入 torch 或初始化 NPU。
+
+### 流水线读取权限与失败定位
+
+自动平台 token 的流水线读取域为 singular `action: read`，与 repository/project 的读取
+域不同，参见[官方 Token 权限表](https://docs.gitcode.com/docs/help/home/org_project/pipeline/security-permissions/token-permissions/)。
+这不是 `action: write`，不授予运行其他流水线或修改配置权限；仍须实际运行确认 v8 API 能力。
+
+`API.request` 的 HTTP 错误只输出固定服务/端点类别和状态码，例如
+`API_GITCODE_ACTION_RUN_HTTP_403`。不输出请求 URL、ID、响应体、header 或 token。
+首个 API 为同仓当前 run GET；该读取失败不说明 GitHub dispatch token 权限不足。
+若修改 common/capture 脚本，须重新生成工作流，并同步可信 `script_sha256` 与 U=C pin，
+不能把诊断格式更新视为无需版本核验的热补丁。

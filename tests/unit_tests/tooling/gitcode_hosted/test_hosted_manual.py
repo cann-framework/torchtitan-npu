@@ -177,6 +177,7 @@ class HostedManualTests(unittest.TestCase):
         self.assertTrue(all(line == line.rstrip() for line in content.splitlines()))
         doc = yaml.load(content, Loader=yaml.BaseLoader)
         self.assertEqual(set(doc["on"]), {"workflow_dispatch"})
+        self.assertEqual(doc["permissions"]["action"], "read")
         jobs = doc["stages"]["manual"]["jobs"]
         self.assertEqual(set(jobs), {"manual_capture", "manual_forward"})
         self.assertEqual(jobs["manual_forward"]["needs"], ["manual_capture"])
@@ -450,6 +451,21 @@ class HostedManualTests(unittest.TestCase):
         with self.assertRaises(common.ManualForwardError):
             api.gc("/pulls/2/comments", body={"body": "not allowed"})
         api.opener.open.assert_not_called()
+
+    def test_http_failure_labels_service_route_without_secret_or_raw_target(self):
+        import urllib.error
+
+        api = common.API({"ATOMGIT_TOKEN": "sensitive-token"})
+        paths = {
+            "/actions/runs/run1": "GITCODE_ACTION_RUN",
+            "/actions/runs/run1/jobs": "GITCODE_ACTION_JOBS",
+            "/actions/runs/run1/jobs/job1": "GITCODE_ACTION_JOB",
+            "/actions/runs/run1/jobs/job1/logs": "GITCODE_ACTION_STEP_LOGS",
+        }
+        for suffix, label in paths.items():
+            api.opener.open = Mock(side_effect=urllib.error.HTTPError("sensitive-url", 403, "sensitive-body", {}, None))
+            with self.assertRaisesRegex(common.ManualForwardError, "^API_" + label + "_HTTP_403$"):
+                api.gc(suffix, version=8)
 
     def test_error_output_does_not_dump_api_body_or_credentials(self):
         import io
