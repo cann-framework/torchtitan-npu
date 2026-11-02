@@ -22,7 +22,7 @@ stages:
         name: P0 metadata only - not Forward acceptance
         runs-on: [ubuntu-latest, x64, small]
         steps:
-          - name: Print bounded non-secret metadata allowlist
+          - name: Print bounded non-secret metadata allowlist part 1
             env:
               PROBE_EVENT_NAME: ${{ atomgit.event_name }}
               PROBE_RUN_ID: ${{ atomgit.run_id }}
@@ -44,18 +44,11 @@ stages:
               PROBE_PR_HEAD_SHA: ${{ atomgit.event.pull_request.head.sha }}
               PROBE_PR_BASE_SHA: ${{ atomgit.event.pull_request.base.sha }}
               PROBE_PR_HEAD_REF: ${{ atomgit.event.pull_request.head.ref }}
-              PROBE_PR_BASE_REF: ${{ atomgit.event.pull_request.base.ref }}
-              PROBE_PR_HEAD_REPO: ${{ atomgit.event.pull_request.head.repo.full_name }}
-              PROBE_PR_BASE_REPO: ${{ atomgit.event.pull_request.base.repo.full_name }}
-              PROBE_PR_HEAD_REPO_ID: ${{ atomgit.event.pull_request.head.repo.id }}
-              PROBE_PR_BASE_REPO_ID: ${{ atomgit.event.pull_request.base.repo.id }}
-              PROBE_PR_UPDATED_AT: ${{ atomgit.event.pull_request.updated_at }}
-              PROBE_SENDER: ${{ atomgit.event.sender.login }}
             run: |
               python3 -I - <<'PY'
               import json
               import os
-              names = ["event_name","run_id","run_attempt","workflow","workflow_ref","workflow_sha","sha","ref","base_ref","head_ref","repository","repository_id","actor","event_action","event_created_at","pr_number","pr_id","pr_head_sha","pr_base_sha","pr_head_ref","pr_base_ref","pr_head_repo","pr_base_repo","pr_head_repo_id","pr_base_repo_id","pr_updated_at","sender"]
+              names = ['event_name', 'run_id', 'run_attempt', 'workflow', 'workflow_ref', 'workflow_sha', 'sha', 'ref', 'base_ref', 'head_ref', 'repository', 'repository_id', 'actor', 'event_action', 'event_created_at', 'pr_number', 'pr_id', 'pr_head_sha', 'pr_base_sha', 'pr_head_ref']
               metadata = {}
               for name in names:
                   value = os.environ.get("PROBE_" + name.upper(), "")
@@ -74,6 +67,45 @@ stages:
                   }
               print(json.dumps({
                   "schema": 1,
+                  "part": 1,
+                  "scope": "PERSONAL_PREVALIDATION_ONLY_NOT_OFFICIAL_FORWARD_ACCEPTANCE",
+                  "missing_fields_are_not_proof": True,
+                  "metadata": metadata,
+              }, sort_keys=True, ensure_ascii=True))
+              PY
+          - name: Print bounded non-secret metadata allowlist part 2
+            env:
+              PROBE_PR_BASE_REF: ${{ atomgit.event.pull_request.base.ref }}
+              PROBE_PR_HEAD_REPO: ${{ atomgit.event.pull_request.head.repo.full_name }}
+              PROBE_PR_BASE_REPO: ${{ atomgit.event.pull_request.base.repo.full_name }}
+              PROBE_PR_HEAD_REPO_ID: ${{ atomgit.event.pull_request.head.repo.id }}
+              PROBE_PR_BASE_REPO_ID: ${{ atomgit.event.pull_request.base.repo.id }}
+              PROBE_PR_UPDATED_AT: ${{ atomgit.event.pull_request.updated_at }}
+              PROBE_SENDER: ${{ atomgit.event.sender.login }}
+            run: |
+              python3 -I - <<'PY'
+              import json
+              import os
+              names = ['pr_base_ref', 'pr_head_repo', 'pr_base_repo', 'pr_head_repo_id', 'pr_base_repo_id', 'pr_updated_at', 'sender']
+              metadata = {}
+              for name in names:
+                  value = os.environ.get("PROBE_" + name.upper(), "")
+                  metadata[name] = {
+                      "present": bool(value),
+                      "value": value[:512],
+                      "truncated": len(value) > 512,
+                  }
+              runtime_names = []
+              for name in runtime_names:
+                  value = os.environ.get(name, "")
+                  metadata["runtime_" + name.lower()] = {
+                      "present": bool(value),
+                      "value": value[:512],
+                      "truncated": len(value) > 512,
+                  }
+              print(json.dumps({
+                  "schema": 1,
+                  "part": 2,
                   "scope": "PERSONAL_PREVALIDATION_ONLY_NOT_OFFICIAL_FORWARD_ACCEPTANCE",
                   "missing_fields_are_not_proof": True,
                   "metadata": metadata,
