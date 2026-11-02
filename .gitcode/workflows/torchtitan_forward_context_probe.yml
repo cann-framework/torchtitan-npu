@@ -1,0 +1,81 @@
+# P0 metadata observation only: no checkout, dependencies, secrets, API calls,
+# source execution, dispatch, publication or hardware allocation.
+name: TorchTitan Personal GitCode Context Prevalidation
+on:
+  pull_request_target:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  repository: read
+  pr: read
+stages:
+  observe:
+    name: Observe documented hosted Action context
+    jobs:
+      context:
+        # Personal-fork prevalidation only; never the official CANN PR gate.
+        if: >-
+          atomgit.repository == 'depeng1994/torchtitan-npu' &&
+          (atomgit.event_name == 'workflow_dispatch' ||
+          (atomgit.event_name == 'pull_request_target' &&
+          atomgit.event.pull_request.base.repo.full_name == 'depeng1994/torchtitan-npu'))
+        name: P0 metadata only - not Forward acceptance
+        runs-on: [ubuntu-latest, x64, small]
+        steps:
+          - name: Print bounded non-secret metadata allowlist
+            env:
+              PROBE_EVENT_NAME: ${{ atomgit.event_name }}
+              PROBE_RUN_ID: ${{ atomgit.run_id }}
+              PROBE_RUN_ATTEMPT: ${{ atomgit.run_attempt }}
+              PROBE_WORKFLOW: ${{ atomgit.workflow }}
+              PROBE_WORKFLOW_REF: ${{ atomgit.workflow_ref }}
+              PROBE_WORKFLOW_SHA: ${{ atomgit.workflow_sha }}
+              PROBE_SHA: ${{ atomgit.sha }}
+              PROBE_REF: ${{ atomgit.ref }}
+              PROBE_BASE_REF: ${{ atomgit.base_ref }}
+              PROBE_HEAD_REF: ${{ atomgit.head_ref }}
+              PROBE_REPOSITORY: ${{ atomgit.repository }}
+              PROBE_REPOSITORY_ID: ${{ atomgit.repository_id }}
+              PROBE_ACTOR: ${{ atomgit.actor }}
+              PROBE_EVENT_ACTION: ${{ atomgit.event.action }}
+              PROBE_EVENT_CREATED_AT: ${{ atomgit.event.created_at }}
+              PROBE_PR_NUMBER: ${{ atomgit.event.pull_request.number }}
+              PROBE_PR_ID: ${{ atomgit.event.pull_request.id }}
+              PROBE_PR_HEAD_SHA: ${{ atomgit.event.pull_request.head.sha }}
+              PROBE_PR_BASE_SHA: ${{ atomgit.event.pull_request.base.sha }}
+              PROBE_PR_HEAD_REF: ${{ atomgit.event.pull_request.head.ref }}
+              PROBE_PR_BASE_REF: ${{ atomgit.event.pull_request.base.ref }}
+              PROBE_PR_HEAD_REPO: ${{ atomgit.event.pull_request.head.repo.full_name }}
+              PROBE_PR_BASE_REPO: ${{ atomgit.event.pull_request.base.repo.full_name }}
+              PROBE_PR_HEAD_REPO_ID: ${{ atomgit.event.pull_request.head.repo.id }}
+              PROBE_PR_BASE_REPO_ID: ${{ atomgit.event.pull_request.base.repo.id }}
+              PROBE_PR_UPDATED_AT: ${{ atomgit.event.pull_request.updated_at }}
+              PROBE_SENDER: ${{ atomgit.event.sender.login }}
+            run: |
+              python3 -I - <<'PY'
+              import json
+              import os
+              names = ["event_name","run_id","run_attempt","workflow","workflow_ref","workflow_sha","sha","ref","base_ref","head_ref","repository","repository_id","actor","event_action","event_created_at","pr_number","pr_id","pr_head_sha","pr_base_sha","pr_head_ref","pr_base_ref","pr_head_repo","pr_base_repo","pr_head_repo_id","pr_base_repo_id","pr_updated_at","sender"]
+              metadata = {}
+              for name in names:
+                  value = os.environ.get("PROBE_" + name.upper(), "")
+                  metadata[name] = {
+                      "present": bool(value),
+                      "value": value[:512],
+                      "truncated": len(value) > 512,
+                  }
+              runtime_names = ["ATOMGIT_RUN_ID", "ATOMGIT_RUN_NUMBER", "ATOMGIT_RUN_ATTEMPT", "ATOMGIT_WORKFLOW", "ATOMGIT_WORKFLOW_REF", "ATOMGIT_WORKFLOW_SHA", "ATOMGIT_REPOSITORY", "ATOMGIT_REPOSITORY_ID", "ATOMGIT_ACTOR", "ATOMGIT_ACTOR_ID", "ATOMGIT_EVENT_NAME", "ATOMGIT_REF", "ATOMGIT_SHA", "ATOMGIT_BASE_REF", "ATOMGIT_HEAD_REF"]
+              for name in runtime_names:
+                  value = os.environ.get(name, "")
+                  metadata["runtime_" + name.lower()] = {
+                      "present": bool(value),
+                      "value": value[:512],
+                      "truncated": len(value) > 512,
+                  }
+              print(json.dumps({
+                  "schema": 1,
+                  "scope": "PERSONAL_PREVALIDATION_ONLY_NOT_OFFICIAL_FORWARD_ACCEPTANCE",
+                  "missing_fields_are_not_proof": True,
+                  "metadata": metadata,
+              }, sort_keys=True, ensure_ascii=True))
+              PY
