@@ -51,6 +51,29 @@ class RuntimeTests(unittest.TestCase):
             "LITE_ACTIONS_CHECKS_KEY": "SYNTHETIC-KEY-NOT-A-CREDENTIAL",
         }
 
+    def test_source_failure_diagnostics_only_emit_exact_audited_constants(self):
+        from ci_core.gitcode_source import SourceError
+
+        for code in runtime.SOURCE_ERROR_CODES:
+            self.assertEqual(
+                runtime.safe_failure(SourceError(code), "prepare"),
+                {"phase": "prepare", "stage": "SOURCE", "code": code},
+            )
+        for error in (
+            SourceError("GIT_OPERATION_FAILED token-secret"),
+            SourceError("GIT_OPERATION_FAILED", "token-secret"),
+            ValueError("token-secret"),
+        ):
+            diagnostic = runtime.safe_failure(error, "prepare")
+            self.assertEqual(diagnostic["code"], "UNCLASSIFIED")
+            self.assertNotIn("token-secret", json.dumps(diagnostic))
+        with (
+            patch.object(runtime, "execute", side_effect=SourceError("FETCHED_REF_SHA_MISMATCH")),
+            patch("sys.stderr") as stderr,
+        ):
+            self.assertEqual(runtime.main(["prepare"]), 1)
+            self.assertIn("FETCHED_REF_SHA_MISMATCH", str(stderr.write.call_args_list))
+
     def test_prepare_builds_trusted_runner_and_cleans_private_key(self):
         producer = Mock(policy=self.policy)
         producer.prepare.return_value = {"plan_digest": "sealed"}

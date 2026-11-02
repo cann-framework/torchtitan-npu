@@ -131,3 +131,15 @@ GitCode v8 job detail 的 `steps` 包含平台步骤，不能直接把数组长�
 用户脚本 hash、shell、工作目录、完整 job/log 双读及年龄校验不放宽，捕获时间必须
 取实际用户步骤而非初始化步骤。去秘密真实 API fixture 和负例位于
 `tests/unit_tests/tooling/gitcode_hosted/fixtures/gitcode_b472_platform_steps.json`。
+
+### Hosted source 失败诊断与跨平台追踪
+
+Hosted runtime 对 `SourceError` 只输出已审固定枚举，例如
+`{"phase":"prepare","stage":"SOURCE","code":"UNSUPPORTED_SOURCE_FILE_MODE"}`。
+非白名单内容、多参数异常及其他异常不回显原文，标为 `UNCLASSIFIED`；不得输出 Git
+命令 stderr、请求、凭据或环境。安全诊断不等于已经修复来源构建失败，也不放宽来源校验。
+
+GitCode forward 在独立核验实际 GitHub run 的仓库、操作者、控制 SHA、工作流及 nonce
+之后立即输出 `GITHUB_RUN_BOUND`，包含该 case、数字 run ID 和固定仓库 run URL。
+即使随后 Prepare/Waiter 失败，该链接也保留用于排查；该事件不是 PASS，不授予当前 PR
+合入权限。未知 dispatch 仍只查既有 nonce，不自动重发 POST。

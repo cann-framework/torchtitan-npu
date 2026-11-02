@@ -332,7 +332,7 @@ def find_run(api, intent):
     return validate_github_run(matches[0], intent) if matches else None
 
 
-def forward(api, intent, *, clock=time.time, sleep=time.sleep):
+def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _: None):
     require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
     release(api, intent["control_sha"])
     require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
@@ -367,10 +367,22 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep):
                     break
                 sleep(5)
             require(run_id is not None, "DISPATCH_OUTCOME_UNKNOWN_NO_RETRY")
+    reported_run = False
     while int(clock()) < intent["deadline"]:
         run_identity(api, intent["bridge"]["bridge_action_run"], intent["control_sha"])
         run = api.gh(f"/actions/runs/{run_id}")
         validate_github_run(run, intent)
+        if not reported_run:
+            progress(
+                {
+                    "event": "GITHUB_RUN_BOUND",
+                    "test_id": intent["selectors"][0]["test_id"],
+                    "github_run_id": run_id,
+                    "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
+                    "not_current_merge_authorization": True,
+                }
+            )
+            reported_run = True
         require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
         if run.get("status") == "completed":
             require(run.get("conclusion") == "success", "GITHUB_FORWARD_FAILED")
@@ -408,7 +420,12 @@ def main():
     try:
         api = API(os.environ)
         intent = retrieve_intent(api, os.environ)
-        print(json.dumps(forward(api, intent), sort_keys=True))
+        print(
+            json.dumps(
+                forward(api, intent, progress=lambda row: print(json.dumps(row, sort_keys=True), flush=True)),
+                sort_keys=True,
+            )
+        )
         return 0
     except Exception as error:
         return emit_failure(error)

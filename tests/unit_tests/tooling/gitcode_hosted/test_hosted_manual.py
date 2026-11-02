@@ -380,6 +380,34 @@ class HostedManualTests(unittest.TestCase):
             dispatch.forward(self.api, intent, clock=lambda: self.now)
         self.assertEqual(self.api.posts, 0)
 
+    def test_failed_github_run_exposes_verified_link_without_false_success(self):
+        intent = self.emit()
+        original = self.api.gh
+        events = []
+
+        def failed(suffix, **kwargs):
+            result = original(suffix, **kwargs)
+            if suffix == "/actions/runs/42":
+                result["conclusion"] = "failure"
+            return result
+
+        self.api.gh = failed
+        with self.assertRaisesRegex(common.ManualForwardError, "GITHUB_FORWARD_FAILED"):
+            dispatch.forward(self.api, intent, clock=lambda: self.now, progress=events.append)
+        self.assertEqual(
+            events,
+            [
+                {
+                    "event": "GITHUB_RUN_BOUND",
+                    "test_id": "worker_os_blue",
+                    "github_run_id": 42,
+                    "github_run_url": "https://github.com/cann-framework/torchtitan-npu/actions/runs/42",
+                    "not_current_merge_authorization": True,
+                }
+            ],
+        )
+        self.assertEqual(self.api.posts, 1)
+
     def test_lost_dispatch_response_recovers_nonce_without_repost(self):
         intent = self.emit()
         self.api.lose_response = True

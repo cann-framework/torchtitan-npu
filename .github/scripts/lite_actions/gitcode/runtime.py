@@ -171,6 +171,55 @@ def execute(phase, *, environment, factory=None, clock=time.time, sleep=time.sle
         key_path.unlink(missing_ok=True)
 
 
+SOURCE_ERROR_CODES = frozenset(
+    {
+        "DEPENDENCY_DECLARATION_MISMATCH",
+        "FETCHED_REF_SHA_MISMATCH",
+        "GIT_OPERATION_FAILED",
+        "GIT_OPERATION_TIMEOUT",
+        "GIT_OUTPUT_LIMIT",
+        "GIT_UNAVAILABLE",
+        "GIT_VERSION_NOT_PINNED",
+        "INVALID_BRANCH_REF",
+        "INVALID_COMMIT_SHA",
+        "MERGE_CONFLICT",
+        "SHALLOW_HISTORY_UNSUPPORTED",
+        "SOURCE_ALREADY_BUILT",
+        "SOURCE_ARCHIVE_METADATA_LIMIT",
+        "SOURCE_BUILD_DEADLINE_EXPIRED",
+        "SOURCE_BUNDLE_DIGEST_MISMATCH",
+        "SOURCE_BUNDLE_SIZE_LIMIT",
+        "SOURCE_DESTINATION_EXISTS",
+        "SOURCE_DUPLICATE_OR_FILE_LIMIT",
+        "SOURCE_EXTRACTION_FAILED",
+        "SOURCE_FILE_LIMIT",
+        "SOURCE_FILE_UNREADABLE",
+        "SOURCE_HANDLE_PROVIDER_MISMATCH",
+        "SOURCE_NOT_COMMIT",
+        "SOURCE_SIZE_LIMIT",
+        "UNMATERIALIZED_DEPENDENCY",
+        "UNMATERIALIZED_LFS_OBJECT",
+        "UNSAFE_ARCHIVE_MEMBER",
+        "UNSAFE_ARCHIVE_PATH",
+        "UNSUPPORTED_SOURCE_FILE_MODE",
+        "UNTRUSTED_GIT_REMOTE",
+    }
+)
+
+
+def safe_failure(error, phase):
+    """Expose only audited constants, never exception repr, context or API output."""
+    source = type(error).__name__ == "SourceError"
+    code = "UNCLASSIFIED"
+    if source and len(error.args) == 1 and type(error.args[0]) is str and error.args[0] in SOURCE_ERROR_CODES:
+        code = error.args[0]
+    return {
+        "phase": phase if phase in {"prepare", "wait"} else "unknown",
+        "stage": "SOURCE" if source else "HOSTED",
+        "code": code,
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("prepare", "wait"))
@@ -180,8 +229,10 @@ def main(argv=None):
         print(json.dumps(result, sort_keys=True))
         return exit_code
     except Exception as error:
-        # Exception repr may contain a request/credential. Only expose the type.
-        print("GitCode Hosted failed closed: " + type(error).__name__, file=sys.stderr)
+        print(
+            "GitCode Hosted failed closed: " + json.dumps(safe_failure(error, args.phase), sort_keys=True),
+            file=sys.stderr,
+        )
         return 1
 
 
