@@ -281,6 +281,10 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep):
     # A completed capture is the retry identity. Never invent a new nonce.
     run_id = find_run(api, intent)
     if run_id is None:
+        require(
+            int(clock()) < intent["deadline"] and int(clock()) - intent["bridge"]["event_created_at"] <= 300,
+            "CAPTURE_EXPIRED_BEFORE_DISPATCH",
+        )
         body = {
             "ref": "master",
             "return_run_details": True,

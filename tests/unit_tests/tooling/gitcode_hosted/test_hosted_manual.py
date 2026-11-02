@@ -302,6 +302,21 @@ class HostedManualTests(unittest.TestCase):
             dispatch.forward(self.api, intent, clock=lambda: self.now)
         self.assertEqual(self.api.posts, 0)
 
+    def test_slow_nonce_lookup_cannot_dispatch_expired_capture(self):
+        intent = self.emit()
+        original = self.api.gh
+
+        def delayed(suffix, **kwargs):
+            result = original(suffix, **kwargs)
+            if "/runs?" in suffix:
+                self.now += 301
+            return result
+
+        self.api.gh = delayed
+        with self.assertRaisesRegex(common.ManualForwardError, "EXPIRED_BEFORE_DISPATCH"):
+            dispatch.forward(self.api, intent, clock=lambda: self.now)
+        self.assertEqual(self.api.posts, 0)
+
     def test_lost_dispatch_response_recovers_nonce_without_repost(self):
         intent = self.emit()
         self.api.lose_response = True
