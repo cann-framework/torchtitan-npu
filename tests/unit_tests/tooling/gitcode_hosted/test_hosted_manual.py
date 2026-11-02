@@ -4,18 +4,19 @@ import copy
 import hashlib
 import io
 import json
-import tempfile
 import os
 import subprocess
+import sys
+import tempfile
+import unittest
 import urllib.error
 import zipfile
-import sys
-import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import yaml
+from ci_core.gitcode_checks import CheckRunChannel, CreationJournal
 
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPTS = ROOT / ".gitcode/scripts"
@@ -36,9 +37,13 @@ def fake_plan_and_receipt(intent, run_id=42):
         "source_provider": "gitcode",
         "test_mode": "merge_result",
         "github": {
-            "repo": common.GH_REPO, "repo_id": common.GH_ID,
-            "workflow_id": common.GH_WORKFLOW_ID, "workflow_path": common.GH_WORKFLOW,
-            "run_id": run_id, "run_attempt": 1, "prepare_job_id": 31,
+            "repo": common.GH_REPO,
+            "repo_id": common.GH_ID,
+            "workflow_id": common.GH_WORKFLOW_ID,
+            "workflow_path": common.GH_WORKFLOW,
+            "run_id": run_id,
+            "run_attempt": 1,
+            "prepare_job_id": 31,
         },
         "control": {"control_sha": intent["control_sha"]},
         "pr": intent["pr"],
@@ -51,11 +56,15 @@ def fake_plan_and_receipt(intent, run_id=42):
         "cases": [{"case_id": case_id, "kind": "smoke"} for case_id in case_ids],
     }
     spec_payload = {
-        "pr": plan["pr"], "merge": plan["merge"], "control": plan["control"],
+        "pr": plan["pr"],
+        "merge": plan["merge"],
+        "control": plan["control"],
         "workflow_id": plan["github"]["workflow_id"],
         "workflow_path": plan["github"]["workflow_path"],
-        "pipeline": plan["pipeline"], "policy_version": plan["policy_version"],
-        "environment_version": plan["environment_version"], "cases": plan["cases"],
+        "pipeline": plan["pipeline"],
+        "policy_version": plan["policy_version"],
+        "environment_version": plan["environment_version"],
+        "cases": plan["cases"],
     }
     plan["request_spec_digest"] = hashlib.sha256(common.canonical(spec_payload)).hexdigest()
     plan["result_slots"] = {}
@@ -176,11 +185,23 @@ class FakeAPI:
         self.plan_archive = None
         self.artifact_metadata = None
         self.case_checks = []
+        self.fixed_checks = {}
+        self.extra_runs = {}
+        self.extra_jobs = {}
+        self.extra_artifacts = {}
+        self.extra_archives = {}
         self.fail_cases = set()
         self.not_run_cases = set()
         self.github_run_conclusion = "success"
         self.completed_jobs = [
-            {"id": 31 if name == "prepare-gitcode" else 32, "name": name, "status": "completed", "conclusion": "success", "run_id": 42, "run_attempt": 1}
+            {
+                "id": 31 if name == "prepare-gitcode" else 32,
+                "name": name,
+                "status": "completed",
+                "conclusion": "success",
+                "run_id": 42,
+                "run_attempt": 1,
+            }
             for name in ("prepare-gitcode", "wait-gitcode", "Lite-Actions-GitCode-Smoke")
         ]
 
@@ -205,6 +226,8 @@ class FakeAPI:
         raise AssertionError(suffix)
 
     def download_authenticated_artifact(self, artifact_id):
+        if artifact_id in self.extra_archives:
+            return self.extra_archives[artifact_id]
         assert artifact_id == 77
         return self.plan_archive
 
@@ -231,12 +254,16 @@ class FakeAPI:
                 archive.writestr("ci-request.json", raw_plan)
             self.plan_archive = archive_io.getvalue()
             self.artifact_metadata = {
-                "id": 77, "name": "lite-ci-request-1", "expired": False,
+                "id": 77,
+                "name": "lite-ci-request-1",
+                "expired": False,
                 "size_in_bytes": len(self.plan_archive),
                 "digest": "sha256:" + hashlib.sha256(self.plan_archive).hexdigest(),
                 "workflow_run": {
-                    "id": 42, "repository_id": common.GH_ID,
-                    "head_sha": S, "head_branch": "master",
+                    "id": 42,
+                    "repository_id": common.GH_ID,
+                    "head_sha": S,
+                    "head_branch": "master",
                 },
             }
             self.case_checks = [
@@ -248,9 +275,7 @@ class FakeAPI:
                     envelope = json.loads(check["output"]["summary"])
                     envelope["result"]["status"] = "FAIL"
                     envelope["result"]["exit_code"] = 1
-                    check["output"]["summary"] = json.dumps(
-                        envelope, sort_keys=True, separators=(",", ":")
-                    )
+                    check["output"]["summary"] = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
                     check["conclusion"] = "failure"
                 if any(case_id in check.get("name", "") for case_id in self.not_run_cases):
                     check["status"] = "in_progress"
@@ -287,12 +312,35 @@ class FakeAPI:
             return copy.deepcopy(self.artifact_metadata)
         if suffix.startswith("/check-runs/"):
             check_id = int(suffix.rsplit("/", 1)[1])
+            if check_id in self.fixed_checks:
+                return copy.deepcopy(self.fixed_checks[check_id])
             for check in self.case_checks:
                 if check["id"] == check_id:
                     return copy.deepcopy(check)
             raise AssertionError(suffix)
+        if suffix.startswith("/actions/runs/") and "/artifacts?" in suffix:
+            run_id = int(suffix.split("/actions/runs/", 1)[1].split("/", 1)[0])
+            artifact = self.extra_artifacts.get(run_id)
+            if artifact is None:
+                raise AssertionError(suffix)
+            return {"total_count": 1, "artifacts": [{"id": artifact["id"], "name": "lite-ci-request-1"}]}
+        if suffix.startswith("/actions/artifacts/"):
+            artifact_id = int(suffix.rsplit("/", 1)[1])
+            for artifact in self.extra_artifacts.values():
+                if artifact["id"] == artifact_id:
+                    return copy.deepcopy(artifact)
+            raise AssertionError(suffix)
+        if suffix.startswith("/actions/runs/") and suffix.endswith("/jobs?filter=latest&per_page=100"):
+            run_id = int(suffix.split("/actions/runs/", 1)[1].split("/", 1)[0])
+            if run_id in self.extra_jobs:
+                jobs = self.extra_jobs[run_id]
+                return {"total_count": len(jobs), "jobs": copy.deepcopy(jobs)}
         if suffix == "/actions/runs/42":
             return copy.deepcopy(self.gh_run)
+        if suffix.startswith("/actions/runs/"):
+            run_id = int(suffix.rsplit("/", 1)[1])
+            if run_id in self.extra_runs:
+                return copy.deepcopy(self.extra_runs[run_id])
         if suffix.startswith("/actions/runs/42/jobs?"):
             return {"total_count": len(self.completed_jobs), "jobs": copy.deepcopy(self.completed_jobs)}
         raise AssertionError(suffix)
@@ -304,6 +352,38 @@ def dispatch_module_case_id(test_id):
         "dispatch_smoke_8p": "case_001_dispatch_smoke_8p",
         "dispatch_smoke_16p": "case_002_dispatch_smoke_16p",
     }[test_id]
+
+
+class SDKCheckProducerAPI:
+    repo_id = common.GH_ID
+    repo = common.GH_REPO
+
+    def __init__(self, start_id=9100):
+        self.checks = {}
+        self.next_id = start_id
+
+    def request(self, method, path, data=None):
+        if method == "POST" and path == "/check-runs":
+            check_id = self.next_id
+            self.next_id += 1
+            check = copy.deepcopy(data)
+            check.update(
+                id=check_id,
+                app={"id": 5575236},
+                conclusion=None,
+                html_url=f"https://github.com/{self.repo}/runs/{check_id}",
+                url=f"https://api.github.com/repos/{self.repo}/check-runs/{check_id}",
+            )
+            self.checks[check_id] = check
+            return copy.deepcopy(check)
+        check_id = int(path.rsplit("/", 1)[1])
+        if check_id not in self.checks:
+            raise AssertionError(path)
+        if method == "PATCH":
+            self.checks[check_id].update(copy.deepcopy(data))
+        elif method != "GET":
+            raise AssertionError((method, path))
+        return copy.deepcopy(self.checks[check_id])
 
 
 class HostedManualTests(unittest.TestCase):
@@ -327,6 +407,142 @@ class HostedManualTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
+    def sdk_plan_and_producer(self, intent, run_id, bridge=None, start_id=9100):
+        from ci_core.gitcode_contract import canonical as sdk_canonical
+
+        source_intent = copy.deepcopy(intent)
+        if bridge is not None:
+            source_intent["bridge"] = copy.deepcopy(bridge)
+        source_intent["deadline"] = max(source_intent["deadline"], source_intent["bridge"]["event_created_at"] + 900)
+        plan, _ = fake_plan_and_receipt(source_intent, run_id=run_id)
+        producer_api = SDKCheckProducerAPI(start_id=start_id)
+        journal_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(journal_dir.cleanup)
+        channel = CheckRunChannel(
+            producer_api,
+            repo_id=common.GH_ID,
+            app_id=5575236,
+            journal=CreationJournal(Path(journal_dir.name) / "checks.sqlite3"),
+        )
+        plan["result_slots"] = channel.precreate(plan)
+        unsigned = dict(plan)
+        unsigned.pop("plan_digest", None)
+        plan["plan_digest"] = hashlib.sha256(sdk_canonical(unsigned)).hexdigest()
+        receipt = {
+            "request_id": f"{common.GH_ID}/{run_id}/1",
+            "plan_digest": plan["plan_digest"],
+            "request_spec_digest": plan["request_spec_digest"],
+            "source_snapshot_id": source_intent["bridge"]["source_snapshot_id"],
+            "dispatch_intent_id": source_intent["bridge"]["dispatch_intent_id"],
+            "canonical_execution_id": "sdk-canonical-execution-1",
+            "pr_generation": 7,
+            "execution_generation": 8,
+            "publication_revision": 9,
+            "duplicate": False,
+        }
+        return source_intent, plan, receipt, channel, producer_api
+
+    def publish_sdk_canonical(self, intent, run_id=41):
+        from ci_core.gitcode_contract import canonical as sdk_canonical
+        from ci_core.gitcode_contract import source_identity
+
+        canonical_bridge = {
+            "bridge_event_id": "manual:canonical-capture-run",
+            "bridge_action_run": "canonical-capture-run",
+            "bridge_attempt": 1,
+            "actor": common.ALLOWED_ACTOR,
+            "bridge_nonce": "c" * 32,
+            "source_snapshot_id": "manual-capture:" + "c" * 32,
+            "dispatch_intent_id": "manual-intent:" + "c" * 32,
+            "rerun_intent_id": "initial",
+            "event_created_at": 900,
+        }
+        canonical_intent, plan, receipt, channel, producer_api = self.sdk_plan_and_producer(
+            intent, run_id, bridge=canonical_bridge
+        )
+        channel.publish_receipt(plan, receipt)
+        self.api.fixed_checks.update(producer_api.checks)
+        admitted_receipt, admitted_pointer = dispatch.read_admission_record(self.api, plan, canonical_intent)
+        self.assertEqual(admitted_receipt, receipt)
+        self.assertIsNone(admitted_pointer)
+        results = []
+        for case in plan["cases"]:
+            result = {
+                "case_id": case["case_id"],
+                "receipt": receipt,
+                "identity": source_identity(plan),
+                "status": "PASS",
+                "exit_code": 0,
+                "cleanup_verified": True,
+                "summary": ["SDK CheckRunChannel producer PASS fixture"],
+            }
+            channel.publish_case(plan, receipt, result)
+            results.append(result)
+        channel.publish_aggregate(plan, receipt, results, current=True)
+        self.api.fixed_checks.update(producer_api.checks)
+        run = {
+            "id": run_id,
+            "run_attempt": 1,
+            "event": "workflow_dispatch",
+            "head_sha": S,
+            "head_branch": "master",
+            "workflow_id": common.GH_WORKFLOW_ID,
+            "display_title": "lite-gitcode:" + canonical_bridge["bridge_nonce"],
+            "repository": {"id": common.GH_ID, "full_name": common.GH_REPO},
+            "actor": {"login": common.ALLOWED_ACTOR},
+            "path": common.GH_WORKFLOW,
+            "status": "completed",
+            "conclusion": "success",
+        }
+        jobs = [
+            {
+                "id": plan["github"]["prepare_job_id"],
+                "name": "prepare-gitcode",
+                "status": "completed",
+                "conclusion": "success",
+                "run_id": run_id,
+                "run_attempt": 1,
+            },
+            {
+                "id": 4102,
+                "name": "wait-gitcode",
+                "status": "completed",
+                "conclusion": "success",
+                "run_id": run_id,
+                "run_attempt": 1,
+            },
+            {
+                "id": 4103,
+                "name": "Lite-Actions-GitCode-Smoke",
+                "status": "completed",
+                "conclusion": "success",
+                "run_id": run_id,
+                "run_attempt": 1,
+            },
+        ]
+        archive_io = io.BytesIO()
+        with zipfile.ZipFile(archive_io, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("ci-request.json", sdk_canonical(plan))
+        archive = archive_io.getvalue()
+        artifact_id = 4400
+        self.api.extra_runs[run_id] = run
+        self.api.extra_jobs[run_id] = jobs
+        self.api.extra_archives[artifact_id] = archive
+        self.api.extra_artifacts[run_id] = {
+            "id": artifact_id,
+            "name": "lite-ci-request-1",
+            "expired": False,
+            "size_in_bytes": len(archive),
+            "digest": "sha256:" + hashlib.sha256(archive).hexdigest(),
+            "workflow_run": {
+                "id": run_id,
+                "repository_id": common.GH_ID,
+                "head_sha": S,
+                "head_branch": "master",
+            },
+        }
+        return canonical_intent, plan, receipt, channel, producer_api, run
+
     def emit(self):
         self.api.log = (
             capture.capture(self.env, self.api, clock=lambda: self.now, nonce_factory=lambda: "n" * 32) + "\n"
@@ -335,7 +551,11 @@ class HostedManualTests(unittest.TestCase):
 
     def render_case(self, intent, plan, receipt, result, workflow_conclusion):
         encoded = dispatch.encode_case_evidence(
-            intent, plan, receipt, result, control_matches=result.get("current_control_matches", True),
+            intent,
+            plan,
+            receipt,
+            result,
+            control_matches=result.get("current_control_matches", True),
             workflow_conclusion=workflow_conclusion,
         )
         environment = {
@@ -361,7 +581,14 @@ class HostedManualTests(unittest.TestCase):
         jobs = doc["stages"]["manual"]["jobs"]
         self.assertEqual(
             set(jobs),
-            {"manual_capture", "manual_forward", "case_os_result", "case_8p_result", "case_16p_result", "aggregate_gate"},
+            {
+                "manual_capture",
+                "manual_forward",
+                "case_os_result",
+                "case_8p_result",
+                "case_16p_result",
+                "aggregate_gate",
+            },
         )
         self.assertEqual(jobs["manual_forward"]["needs"], ["manual_capture"])
         self.assertEqual(
@@ -461,7 +688,9 @@ class HostedManualTests(unittest.TestCase):
         environment = dict(self.env)
         environment.pop("TEST_CASE")
         raw = capture.capture(
-            environment, self.api, clock=lambda: self.now,
+            environment,
+            self.api,
+            clock=lambda: self.now,
             nonce_factory=lambda: "n" * 32,
         )
         payload = __import__("base64").b64decode(raw.rsplit(" ", 1)[1])
@@ -470,7 +699,9 @@ class HostedManualTests(unittest.TestCase):
         self.assertEqual(
             capture.capture(
                 {**self.env, "TEST_CASE": "worker_os_blue"},
-                self.api, clock=lambda: self.now, nonce_factory=lambda: "n" * 32,
+                self.api,
+                clock=lambda: self.now,
+                nonce_factory=lambda: "n" * 32,
             ).split(" ", 1)[1],
             raw.split(" ", 1)[1],
         )
@@ -500,15 +731,170 @@ class HostedManualTests(unittest.TestCase):
         ):
             changed = copy.deepcopy(intent)
             changed["selectors"] = invalid
-            payload = common.canonical({
-                "schema": 1,
-                "kind": "manual-current-observation",
-                "captured_at": self.now,
-                "intent": changed,
-            })
-            self.api.log = common.PREFIX + hashlib.sha256(payload).hexdigest() + " " + __import__("base64").b64encode(payload).decode() + "\n"
+            payload = common.canonical(
+                {
+                    "schema": 1,
+                    "kind": "manual-current-observation",
+                    "captured_at": self.now,
+                    "intent": changed,
+                }
+            )
+            self.api.log = (
+                common.PREFIX
+                + hashlib.sha256(payload).hexdigest()
+                + " "
+                + __import__("base64").b64encode(payload).decode()
+                + "\n"
+            )
             with self.subTest(selectors=invalid), self.assertRaisesRegex(common.ManualForwardError, "CASE_NOT_ALLOWED"):
                 dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
+
+    def test_real_sdk_producer_slot_created_uses_exact_five_field_envelope(self):
+        intent = self.emit()
+        _, plan, _, channel, producer_api = self.sdk_plan_and_producer(intent, 42)
+        slot = channel.create_slot(plan, "aggregate")
+        plan["result_slots"]["aggregate"] = slot
+        unsigned = dict(plan)
+        unsigned.pop("plan_digest", None)
+        plan["plan_digest"] = hashlib.sha256(common.canonical(unsigned)).hexdigest()
+        self.api.fixed_checks.update(producer_api.checks)
+        check = producer_api.checks[slot["id"]]
+        envelope = json.loads(check["output"]["summary"])
+        self.assertEqual(
+            set(envelope),
+            {"schema", "phase", "request_id", "case_id", "request_spec_digest"},
+        )
+        self.assertEqual(envelope["phase"], "SLOT_CREATED")
+        self.assertIsNone(dispatch.read_admission_record(self.api, plan, intent)[0])
+
+    def test_real_sdk_producer_duplicate_follows_canonical_fixed_slots_and_generation(self):
+        intent = self.emit()
+        canonical_intent, canonical_plan, canonical_receipt, _, _, canonical_run = self.publish_sdk_canonical(intent)
+        _, duplicate_plan, _, duplicate_channel, duplicate_api = self.sdk_plan_and_producer(intent, 42, start_id=9200)
+        duplicate_receipt = {
+            "request_id": f"{common.GH_ID}/42/1",
+            "plan_digest": duplicate_plan["plan_digest"],
+            "request_spec_digest": duplicate_plan["request_spec_digest"],
+            "source_snapshot_id": intent["bridge"]["source_snapshot_id"],
+            "dispatch_intent_id": intent["bridge"]["dispatch_intent_id"],
+            "canonical_execution_id": canonical_receipt["canonical_execution_id"],
+            "pr_generation": canonical_receipt["pr_generation"],
+            "execution_generation": canonical_receipt["execution_generation"],
+            "publication_revision": canonical_receipt["publication_revision"],
+            "duplicate": True,
+        }
+        pointer = {
+            "request_id": canonical_receipt["request_id"],
+            "plan_digest": canonical_plan["plan_digest"],
+            "github": canonical_plan["github"],
+            "result_slots": canonical_plan["result_slots"],
+        }
+        duplicate_channel.publish_receipt(duplicate_plan, duplicate_receipt, canonical_execution=pointer)
+        self.api.fixed_checks.update(duplicate_api.checks)
+
+        observed_receipt, observed_pointer = dispatch.read_admission_record(self.api, duplicate_plan, intent)
+        self.assertEqual(observed_receipt, duplicate_receipt)
+        self.assertEqual(observed_pointer, pointer)
+        followed_plan, followed_receipt, followed_intent, followed_run = dispatch.resolve_canonical_execution(
+            self.api, intent, duplicate_plan, observed_receipt, observed_pointer
+        )
+        self.assertEqual(followed_plan["plan_digest"], canonical_plan["plan_digest"])
+        self.assertEqual(followed_receipt, canonical_receipt)
+        self.assertEqual(followed_run["id"], canonical_run["id"])
+        self.assertEqual(followed_intent["bridge"], canonical_intent["bridge"])
+
+        result = dispatch.case_check(
+            self.api,
+            followed_intent,
+            followed_plan,
+            followed_receipt,
+            canonical_plan["github"]["run_id"],
+            "worker_os_blue",
+            run_conclusion=canonical_run["conclusion"],
+            pr_matches=True,
+        )
+        encoded = dispatch.encode_case_evidence(
+            intent,
+            followed_plan,
+            followed_receipt,
+            result,
+            control_matches=True,
+            workflow_conclusion=canonical_run["conclusion"],
+            current_plan=duplicate_plan,
+            current_receipt=duplicate_receipt,
+            canonical_pointer=pointer,
+            canonical_receipt=canonical_receipt,
+        )
+        decoded = dispatch.decode_case_evidence(
+            {
+                "RESULT_CASE": "worker_os_blue",
+                "CASE_EVIDENCE": encoded,
+                "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+                "CAPTURE_ATTEMPT": "1",
+                "CONTROL_SHA": intent["control_sha"],
+            }
+        )
+        self.assertEqual(decoded["case_status"], "PASS")
+        self.assertEqual(decoded["github_run_id"], canonical_plan["github"]["run_id"])
+        self.assertEqual(decoded["identity"]["request_id"], duplicate_receipt["request_id"])
+        self.assertTrue(decoded["identity"]["receipt"]["duplicate"])
+        self.assertEqual(decoded["check_id"], pointer["result_slots"][dispatch.CASE_ORDER["worker_os_blue"]]["id"])
+
+        bad_generation = {**duplicate_receipt, "execution_generation": duplicate_receipt["execution_generation"] + 1}
+        with self.assertRaisesRegex(common.ManualForwardError, "CANONICAL_RECEIPT_GENERATION_MISMATCH"):
+            dispatch.resolve_canonical_execution(self.api, intent, duplicate_plan, bad_generation, pointer)
+
+    def test_duplicate_canonical_pointer_owner_and_midread_change_are_rejected(self):
+        intent = self.emit()
+        _, canonical_plan, canonical_receipt, _, _, _ = self.publish_sdk_canonical(intent)
+        _, duplicate_plan, _, duplicate_channel, duplicate_api = self.sdk_plan_and_producer(intent, 42, start_id=9200)
+        duplicate_receipt = {
+            "request_id": f"{common.GH_ID}/42/1",
+            "plan_digest": duplicate_plan["plan_digest"],
+            "request_spec_digest": duplicate_plan["request_spec_digest"],
+            "source_snapshot_id": intent["bridge"]["source_snapshot_id"],
+            "dispatch_intent_id": intent["bridge"]["dispatch_intent_id"],
+            "canonical_execution_id": canonical_receipt["canonical_execution_id"],
+            "pr_generation": canonical_receipt["pr_generation"],
+            "execution_generation": canonical_receipt["execution_generation"],
+            "publication_revision": canonical_receipt["publication_revision"],
+            "duplicate": True,
+        }
+        pointer = {
+            "request_id": canonical_receipt["request_id"],
+            "plan_digest": canonical_plan["plan_digest"],
+            "github": canonical_plan["github"],
+            "result_slots": canonical_plan["result_slots"],
+        }
+        bad_owner = copy.deepcopy(pointer)
+        bad_owner["github"]["repo_id"] = 999
+        duplicate_channel.publish_receipt(duplicate_plan, duplicate_receipt, canonical_execution=bad_owner)
+        self.api.fixed_checks.update(duplicate_api.checks)
+        with self.assertRaisesRegex(common.ManualForwardError, "CANONICAL_POINTER_INVALID"):
+            dispatch.read_admission_record(self.api, duplicate_plan, intent)
+
+        # Re-publish the correct pointer on a separate duplicate request fixture.
+        _, duplicate_plan2, _, duplicate_channel2, duplicate_api2 = self.sdk_plan_and_producer(
+            intent, 43, start_id=9300
+        )
+        duplicate_receipt2 = {
+            **duplicate_receipt,
+            "request_id": f"{common.GH_ID}/43/1",
+            "plan_digest": duplicate_plan2["plan_digest"],
+        }
+        duplicate_channel2.publish_receipt(duplicate_plan2, duplicate_receipt2, canonical_execution=pointer)
+        self.api.fixed_checks.update(duplicate_api2.checks)
+        changed_pointer = copy.deepcopy(pointer)
+        changed_pointer["github"]["run_id"] = 999
+        with (
+            patch.object(
+                dispatch,
+                "read_admission_record",
+                side_effect=[(canonical_receipt, None), (duplicate_receipt2, changed_pointer)],
+            ),
+            self.assertRaisesRegex(common.ManualForwardError, "CANONICAL_POINTER_CHANGED"),
+        ):
+            dispatch.resolve_canonical_execution(self.api, intent, duplicate_plan2, duplicate_receipt2, pointer)
 
     def test_case_check_uses_immutable_plan_slot_and_full_receipt_identity(self):
         intent = self.emit()
@@ -517,8 +903,10 @@ class HostedManualTests(unittest.TestCase):
         spec = "d" * 64
         plan = {
             "github": {
-                "repo": common.GH_REPO, "repo_id": common.GH_ID,
-                "run_id": run_id, "run_attempt": 1,
+                "repo": common.GH_REPO,
+                "repo_id": common.GH_ID,
+                "run_id": run_id,
+                "run_attempt": 1,
             },
             "control": {"control_sha": intent["control_sha"]},
             "pr": intent["pr"],
@@ -538,9 +926,7 @@ class HostedManualTests(unittest.TestCase):
             "publication_revision": 7,
             "duplicate": False,
         }
-        plan["result_slots"] = {
-            case_id: {"id": 7654, **dispatch.expected_slot(plan, case_id)}
-        }
+        plan["result_slots"] = {case_id: {"id": 7654, **dispatch.expected_slot(plan, case_id)}}
         result = {
             "case_id": case_id,
             "receipt": receipt,
@@ -551,8 +937,11 @@ class HostedManualTests(unittest.TestCase):
             "summary": ["cancelled by operator", "cleanup verified"],
         }
         envelope = {
-            "schema": 4, "phase": "CASE_RESULT",
-            "plan_digest": plan["plan_digest"], "receipt": receipt, "result": result,
+            "schema": 4,
+            "phase": "CASE_RESULT",
+            "plan_digest": plan["plan_digest"],
+            "receipt": receipt,
+            "result": result,
         }
         check = {
             "id": 7654,
@@ -577,9 +966,7 @@ class HostedManualTests(unittest.TestCase):
             return original(suffix, **kwargs)
 
         self.api.gh = by_fixed_id
-        observed = dispatch.case_check(
-            self.api, intent, plan, receipt, run_id, "dispatch_smoke_16p", pr_matches=False
-        )
+        observed = dispatch.case_check(self.api, intent, plan, receipt, run_id, "dispatch_smoke_16p", pr_matches=False)
         self.assertEqual(observed["case_status"], "CANCELLED")
         self.assertIn("cancelled by operator", observed["reason"])
         self.assertEqual(observed["execution_generation"], 4)
@@ -650,7 +1037,12 @@ class HostedManualTests(unittest.TestCase):
         legacy["selectors"] = [{"test_id": "worker_os_blue"}]
         plan, receipt = fake_plan_and_receipt(legacy)
         observed = dispatch.case_check(
-            self.api, legacy, plan, receipt, 42, "dispatch_smoke_16p",
+            self.api,
+            legacy,
+            plan,
+            receipt,
+            42,
+            "dispatch_smoke_16p",
             pr_matches=True,
         )
         self.assertEqual(observed["case_status"], "NOT_RUN")
@@ -663,23 +1055,26 @@ class HostedManualTests(unittest.TestCase):
         from contextlib import redirect_stdout
 
         output = io.StringIO()
-        with patch.dict(
-            "os.environ",
-            {
-                "EVENT_NAME": "Manual",
-                "ATOMGIT_EVENT_NAME": "Manual",
-                "RUN_ATTEMPT": "1",
-                "ATOMGIT_RUN_ID": "run1",
-                "REPOSITORY": common.GC_REPO,
-                "REPOSITORY_ID": common.GC_ID,
-                "REF": "refs/heads/master",
-                "ACTOR": common.ALLOWED_ACTOR,
-                "CONTROL_SHA": S,
-                "RESULT_CASE": "dispatch_smoke_16p",
-                "CAPTURE_RESULT": "failure",
-            },
-            clear=True,
-        ), redirect_stdout(output):
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "EVENT_NAME": "Manual",
+                    "ATOMGIT_EVENT_NAME": "Manual",
+                    "RUN_ATTEMPT": "1",
+                    "ATOMGIT_RUN_ID": "run1",
+                    "REPOSITORY": common.GC_REPO,
+                    "REPOSITORY_ID": common.GC_ID,
+                    "REF": "refs/heads/master",
+                    "ACTOR": common.ALLOWED_ACTOR,
+                    "CONTROL_SHA": S,
+                    "RESULT_CASE": "dispatch_smoke_16p",
+                    "CAPTURE_RESULT": "failure",
+                },
+                clear=True,
+            ),
+            redirect_stdout(output),
+        ):
             self.assertEqual(dispatch.result_main(), 1)
         payload = json.loads(output.getvalue())
         self.assertEqual(payload["case_status"], "NOT_RUN")
@@ -691,9 +1086,7 @@ class HostedManualTests(unittest.TestCase):
         self.now = 1400
         with self.assertRaisesRegex(common.ManualForwardError, "CAPTURE_AGE_INVALID"):
             dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
-        retained = dispatch.retrieve_intent(
-            self.api, self.env, clock=lambda: self.now, historical=True
-        )
+        retained = dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now, historical=True)
         self.assertEqual(retained, intent)
         self.assertEqual(self.api.posts, 0)
 
@@ -701,13 +1094,16 @@ class HostedManualTests(unittest.TestCase):
         intent = self.emit()
         self.api.run["status"] = "COMPLETED"
         self.api.run["conclusion"] = "cancelled"
-        self.assertEqual(dispatch.run_identity(self.api, intent["bridge"]["bridge_action_run"], S)["conclusion"], "cancelled")
+        self.assertEqual(
+            dispatch.run_identity(self.api, intent["bridge"]["bridge_action_run"], S)["conclusion"], "cancelled"
+        )
         self.api.pr["state"] = "closed"
         self.assertFalse(dispatch.current_pr_matches(self.api, intent))
         self.api.pr["state"] = "open"
         self.api.gc = lambda suffix="", **kwargs: (
             {"name": "master", "commit": {"id": "f" * 40}}
-            if suffix == "/branches/master" else FakeAPI.gc(self.api, suffix, **kwargs)
+            if suffix == "/branches/master"
+            else FakeAPI.gc(self.api, suffix, **kwargs)
         )
         self.assertFalse(dispatch.current_control_matches(self.api, S))
 
@@ -731,10 +1127,15 @@ class HostedManualTests(unittest.TestCase):
         receipt = dispatch.read_admission_receipt(self.api, plan, intent)
         self.assertEqual(plan["bridge"]["bridge_nonce"], intent["bridge"]["bridge_nonce"])
         self.assertEqual(receipt["execution_generation"], 2)
-        self.assertEqual(set(plan["result_slots"]), {
-            "aggregate", "case_000_worker_os_blue", "case_001_dispatch_smoke_8p",
-            "case_002_dispatch_smoke_16p",
-        })
+        self.assertEqual(
+            set(plan["result_slots"]),
+            {
+                "aggregate",
+                "case_000_worker_os_blue",
+                "case_001_dispatch_smoke_8p",
+                "case_002_dispatch_smoke_16p",
+            },
+        )
         self.api.artifact_metadata["workflow_run"]["id"] = 43
         with self.assertRaisesRegex(common.ManualForwardError, "ARTIFACT_OWNER"):
             dispatch.read_plan_artifact(self.api, intent, 42)
@@ -1116,12 +1517,18 @@ class HostedManualTests(unittest.TestCase):
             api.gh("/check-runs/77", body={}, authenticated_read=True)
 
         import email.message
+
         blob = b"synthetic-bounded-plan-zip"
         redirect_headers = email.message.Message()
-        redirect_headers["Location"] = "https://productionresults.blob.core.windows.net/container/plan.zip?sig=synthetic-secret"
+        redirect_headers["Location"] = (
+            "https://productionresults.blob.core.windows.net/container/plan.zip?sig=synthetic-secret"
+        )
         redirect = urllib.error.HTTPError(
             "https://api.github.com/repos/" + common.GH_REPO + "/actions/artifacts/77/zip",
-            302, "Found", redirect_headers, None,
+            302,
+            "Found",
+            redirect_headers,
+            None,
         )
         blob_response = Mock()
         blob_response.__enter__ = lambda _: blob_response
@@ -1134,29 +1541,39 @@ class HostedManualTests(unittest.TestCase):
         first, second = [call.args[0] for call in api.opener.open.call_args_list]
         self.assertEqual(first.get_header("Authorization"), "Bearer synthetic-github")
         self.assertIsNone(second.get_header("Authorization"))
-        self.assertEqual(second.full_url.split("?", 1)[0], "https://productionresults.blob.core.windows.net/container/plan.zip")
+        self.assertEqual(
+            second.full_url.split("?", 1)[0], "https://productionresults.blob.core.windows.net/container/plan.zip"
+        )
 
     def test_no_admission_receipt_is_published_as_authenticated_not_run_without_generation(self):
         intent = self.emit()
         plan, receipt = fake_plan_and_receipt(intent)
         self.api.case_checks = [
-            fake_check(plan, receipt, case_id, slot["id"])
-            for case_id, slot in plan["result_slots"].items()
+            fake_check(plan, receipt, case_id, slot["id"]) for case_id, slot in plan["result_slots"].items()
         ]
-        aggregate = next(check for check in self.api.case_checks if check["id"] == plan["result_slots"]["aggregate"]["id"])
+        aggregate = next(
+            check for check in self.api.case_checks if check["id"] == plan["result_slots"]["aggregate"]["id"]
+        )
         aggregate["status"] = "in_progress"
         aggregate["conclusion"] = None
-        aggregate["output"]["summary"] = json.dumps({
-            "schema": 4,
-            "phase": "SLOT_CREATED",
-            "request_id": f"{common.GH_ID}/42/1",
-            "plan_digest": plan["plan_digest"],
-            "case_id": "aggregate",
-            "request_spec_digest": plan["request_spec_digest"],
-        }, sort_keys=True, separators=(",", ":"))
+        aggregate["output"]["summary"] = json.dumps(
+            {
+                "schema": 4,
+                "phase": "SLOT_CREATED",
+                "request_id": f"{common.GH_ID}/42/1",
+                "case_id": "aggregate",
+                "request_spec_digest": plan["request_spec_digest"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         observed_receipt = dispatch.read_admission_receipt(self.api, plan, intent)
         self.assertIsNone(observed_receipt)
-        check = next(check for check in self.api.case_checks if check["id"] == plan["result_slots"]["case_000_worker_os_blue"]["id"])
+        check = next(
+            check
+            for check in self.api.case_checks
+            if check["id"] == plan["result_slots"]["case_000_worker_os_blue"]["id"]
+        )
         result = {
             "test_id": "worker_os_blue",
             "case_id": "case_000_worker_os_blue",
@@ -1172,16 +1589,22 @@ class HostedManualTests(unittest.TestCase):
             "current_pr_matches": True,
         }
         encoded = dispatch.encode_case_evidence(
-            intent, plan, None, result, control_matches=True,
+            intent,
+            plan,
+            None,
+            result,
+            control_matches=True,
             workflow_conclusion="failure",
         )
-        body = dispatch.decode_case_evidence({
-            "RESULT_CASE": "worker_os_blue",
-            "CASE_EVIDENCE": encoded,
-            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
-            "CAPTURE_ATTEMPT": "1",
-            "CONTROL_SHA": intent["control_sha"],
-        })
+        body = dispatch.decode_case_evidence(
+            {
+                "RESULT_CASE": "worker_os_blue",
+                "CASE_EVIDENCE": encoded,
+                "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+                "CAPTURE_ATTEMPT": "1",
+                "CONTROL_SHA": intent["control_sha"],
+            }
+        )
         self.assertIsNone(body["identity"]["receipt"])
         self.assertEqual(body["case_status"], "NOT_RUN")
 
@@ -1189,14 +1612,15 @@ class HostedManualTests(unittest.TestCase):
         intent = self.emit()
         plan, receipt = fake_plan_and_receipt(intent)
         self.api.case_checks = [
-            fake_check(plan, receipt, case_id, slot["id"])
-            for case_id, slot in plan["result_slots"].items()
+            fake_check(plan, receipt, case_id, slot["id"]) for case_id, slot in plan["result_slots"].items()
         ]
-        result = dispatch.case_check(
-            self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True
-        )
+        result = dispatch.case_check(self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True)
         encoded = dispatch.encode_case_evidence(
-            intent, plan, receipt, result, control_matches=True,
+            intent,
+            plan,
+            receipt,
+            result,
+            control_matches=True,
             workflow_conclusion="success",
         )
         environment = {
@@ -1228,7 +1652,7 @@ class HostedManualTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as output:
             dispatch.write_case_job_outputs(
                 {
-                    **{name: encoded for name in dispatch.CASE_OUTPUTS.values()},
+                    **dict.fromkeys(dispatch.CASE_OUTPUTS.values(), encoded),
                     "forward_gate": "success",
                     "forward_gate_reason": "OK",
                 },
@@ -1236,10 +1660,16 @@ class HostedManualTests(unittest.TestCase):
             )
             output.seek(0)
             rows = output.read().decode().splitlines()
-        self.assertEqual([row.split("=", 1)[0] for row in rows], [
-            "case_os_result", "case_8p_result", "case_16p_result",
-            "forward_gate", "forward_gate_reason",
-        ])
+        self.assertEqual(
+            [row.split("=", 1)[0] for row in rows],
+            [
+                "case_os_result",
+                "case_8p_result",
+                "case_16p_result",
+                "forward_gate",
+                "forward_gate_reason",
+            ],
+        )
         self.assertTrue(all(len(row.split("=", 1)[1]) <= 32 * 1024 for row in rows))
 
     def test_case_matrix_os_pass_8p_fail_16p_not_run_keeps_independent_statuses(self):
@@ -1249,11 +1679,14 @@ class HostedManualTests(unittest.TestCase):
         self.api.github_run_conclusion = "failure"
         result = dispatch.forward(self.api, intent, clock=lambda: self.now)
         statuses = {row["test_id"]: row["case_status"] for row in result["case_results"]}
-        self.assertEqual(statuses, {
-            "worker_os_blue": "PASS",
-            "dispatch_smoke_8p": "FAIL",
-            "dispatch_smoke_16p": "NOT_RUN",
-        })
+        self.assertEqual(
+            statuses,
+            {
+                "worker_os_blue": "PASS",
+                "dispatch_smoke_8p": "FAIL",
+                "dispatch_smoke_16p": "NOT_RUN",
+            },
+        )
         self.assertEqual(result["forward_gate"], "failure")
         self.assertEqual(result["forward_gate_reason"], "GITHUB_RUN_NOT_SUCCESS")
         plan = self.api.plan
@@ -1261,18 +1694,19 @@ class HostedManualTests(unittest.TestCase):
         by_test = {row["test_id"]: row for row in result["case_results"]}
         exits = {}
         for test_id in dispatch.ALLOWED_CASES:
-            exit_code, payload = self.render_case(
-                intent, plan, receipt, by_test[test_id], "failure"
-            )
+            exit_code, payload = self.render_case(intent, plan, receipt, by_test[test_id], "failure")
             exits[test_id] = exit_code
             self.assertEqual(payload["case_status"], statuses[test_id])
             self.assertTrue(payload["historical_only"])
             self.assertEqual(payload["current_authority"], "NOT_PROVIDED")
-        self.assertEqual(exits, {
-            "worker_os_blue": 0,
-            "dispatch_smoke_8p": 1,
-            "dispatch_smoke_16p": 1,
-        })
+        self.assertEqual(
+            exits,
+            {
+                "worker_os_blue": 0,
+                "dispatch_smoke_8p": 1,
+                "dispatch_smoke_16p": 1,
+            },
+        )
 
     def test_three_case_pass_with_authority_failure_keeps_cases_green_and_aggregate_red(self):
         intent = self.emit()
@@ -1282,9 +1716,7 @@ class HostedManualTests(unittest.TestCase):
         self.assertEqual(result["forward_gate"], "failure")
         self.assertEqual(result["forward_gate_reason"], "PR_AUTHORITY_MISMATCH")
         for row in result["case_results"]:
-            exit_code, payload = self.render_case(
-                intent, self.api.plan, self.api.receipt, row, "success"
-            )
+            exit_code, payload = self.render_case(intent, self.api.plan, self.api.receipt, row, "success")
             self.assertEqual(exit_code, 0)
             self.assertEqual(payload["case_status"], "PASS")
             self.assertTrue(payload["historical_only"])
@@ -1298,9 +1730,7 @@ class HostedManualTests(unittest.TestCase):
         self.assertEqual(result["forward_gate"], "failure")
         self.assertEqual(result["forward_gate_reason"], "GITHUB_RUN_NOT_SUCCESS")
         for row in result["case_results"]:
-            exit_code, payload = self.render_case(
-                intent, self.api.plan, self.api.receipt, row, "failure"
-            )
+            exit_code, payload = self.render_case(intent, self.api.plan, self.api.receipt, row, "failure")
             self.assertEqual(exit_code, 0)
             self.assertEqual(payload["case_status"], "PASS")
 
@@ -1318,9 +1748,7 @@ class HostedManualTests(unittest.TestCase):
         )
         self.assertEqual(result["forward_gate"], "success")
         for row in result["case_results"]:
-            exit_code, payload = self.render_case(
-                intent, self.api.plan, self.api.receipt, row, "success"
-            )
+            exit_code, payload = self.render_case(intent, self.api.plan, self.api.receipt, row, "success")
             self.assertEqual(exit_code, 0)
             self.assertEqual(payload["case_status"], row["case_status"])
 
@@ -1338,14 +1766,15 @@ class HostedManualTests(unittest.TestCase):
         intent = self.emit()
         plan, receipt = fake_plan_and_receipt(intent)
         self.api.case_checks = [
-            fake_check(plan, receipt, case_id, slot["id"])
-            for case_id, slot in plan["result_slots"].items()
+            fake_check(plan, receipt, case_id, slot["id"]) for case_id, slot in plan["result_slots"].items()
         ]
-        result = dispatch.case_check(
-            self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True
-        )
+        result = dispatch.case_check(self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True)
         encoded = dispatch.encode_case_evidence(
-            intent, plan, receipt, result, control_matches=True,
+            intent,
+            plan,
+            receipt,
+            result,
+            control_matches=True,
             workflow_conclusion="success",
         )
         wrong = {
@@ -1367,15 +1796,17 @@ class HostedManualTests(unittest.TestCase):
         doc = yaml.load(content, Loader=yaml.BaseLoader)
         script = doc["stages"]["manual"]["jobs"]["aggregate_gate"]["steps"][0]["run"]
         environment = dict(os.environ)
-        environment.update({
-            "CAPTURE_RESULT": "success",
-            "FORWARD_RESULT": "failure",
-            "FORWARD_GATE": "",
-            "FORWARD_GATE_REASON": "",
-            "OS_RESULT": "success",
-            "EIGHT_P_RESULT": "success",
-            "SIXTEEN_P_RESULT": "success",
-        })
+        environment.update(
+            {
+                "CAPTURE_RESULT": "success",
+                "FORWARD_RESULT": "failure",
+                "FORWARD_GATE": "",
+                "FORWARD_GATE_REASON": "",
+                "OS_RESULT": "success",
+                "EIGHT_P_RESULT": "success",
+                "SIXTEEN_P_RESULT": "success",
+            }
+        )
         failed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("FORWARD_FAILED_OR_MISSING_OUTPUT", failed.stdout)
@@ -1428,16 +1859,22 @@ class HostedManualTests(unittest.TestCase):
             "current_pr_matches": True,
         }
         encoded = dispatch.encode_case_evidence(
-            intent, plan, receipt, result, control_matches=True,
+            intent,
+            plan,
+            receipt,
+            result,
+            control_matches=True,
             workflow_conclusion="success",
         )
-        body = dispatch.decode_case_evidence({
-            "RESULT_CASE": "dispatch_smoke_8p",
-            "CASE_EVIDENCE": encoded,
-            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
-            "CAPTURE_ATTEMPT": "1",
-            "CONTROL_SHA": intent["control_sha"],
-        })
+        body = dispatch.decode_case_evidence(
+            {
+                "RESULT_CASE": "dispatch_smoke_8p",
+                "CASE_EVIDENCE": encoded,
+                "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+                "CAPTURE_ATTEMPT": "1",
+                "CONTROL_SHA": intent["control_sha"],
+            }
+        )
         self.assertEqual(body["case_status"], "INFRA_ERROR")
         self.assertEqual(body["case_log_url"], result["case_log_url"])
         self.assertIsNone(body["case_check_url"])
@@ -1446,29 +1883,35 @@ class HostedManualTests(unittest.TestCase):
         intent = self.emit()
         plan, receipt = fake_plan_and_receipt(intent)
         self.api.case_checks = [
-            fake_check(plan, receipt, case_id, slot["id"])
-            for case_id, slot in plan["result_slots"].items()
+            fake_check(plan, receipt, case_id, slot["id"]) for case_id, slot in plan["result_slots"].items()
         ]
-        result = dispatch.case_check(
-            self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True
+        result = dispatch.case_check(self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True)
+        body = dispatch.decode_case_evidence(
+            {
+                "RESULT_CASE": "worker_os_blue",
+                "CASE_EVIDENCE": dispatch.encode_case_evidence(
+                    intent,
+                    plan,
+                    receipt,
+                    result,
+                    control_matches=True,
+                    workflow_conclusion="cancelled",
+                ),
+                "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+                "CAPTURE_ATTEMPT": "1",
+                "CONTROL_SHA": intent["control_sha"],
+            }
         )
-        body = dispatch.decode_case_evidence({
-            "RESULT_CASE": "worker_os_blue",
-            "CASE_EVIDENCE": dispatch.encode_case_evidence(
-                intent, plan, receipt, result, control_matches=True,
-                workflow_conclusion="cancelled",
-            ),
-            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
-            "CAPTURE_ATTEMPT": "1",
-            "CONTROL_SHA": intent["control_sha"],
-        })
         body["case_status"] = "CANCELLED"
         body["reason"] = "GitHub cancelled the case before completion"
         body["check_conclusion"] = "cancelled"
         raw = common.canonical(body)
-        encoded = __import__("base64").urlsafe_b64encode(common.canonical({
-            "body": body, "evidence_digest": hashlib.sha256(raw).hexdigest()
-        })).decode().rstrip("=")
+        encoded = (
+            __import__("base64")
+            .urlsafe_b64encode(common.canonical({"body": body, "evidence_digest": hashlib.sha256(raw).hexdigest()}))
+            .decode()
+            .rstrip("=")
+        )
         environment = {
             "RESULT_CASE": "worker_os_blue",
             "CASE_EVIDENCE": encoded,

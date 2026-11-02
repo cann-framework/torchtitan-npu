@@ -94,7 +94,9 @@ stages:
             )
         header += (
             "        runs-on: [ubuntu-latest, x64, small]\n        timeout-minutes: 20\n"
-            "        steps:\n          - id: " + key + "\n            name: "
+            "        steps:\n          - id: "
+            + key
+            + "\n            name: "
             + name
             + "\n            shell: bash\n            working-directory: '.'\n            env:\n"
         )
@@ -146,35 +148,48 @@ stages:
         )
     d = chr(36)
     header += (
-        '      aggregate_gate:\n'
-        '        name: Aggregate Forward and authority gate\n'
-        '        if: ' + d + "{{ always() && atomgit.repository == 'depeng1994/torchtitan-npu' && atomgit.event_name == 'Manual' && atomgit.ref == 'refs/heads/master' }}\n"
-        '        needs: [manual_capture, manual_forward, case_os_result, case_8p_result, case_16p_result]\n'
-        '        runs-on: [ubuntu-latest, x64, small]\n'
-        '        timeout-minutes: 2\n'
-        '        steps:\n'
-        '          - name: Enforce case and aggregate outcome independently\n'
-        '            shell: bash\n'
+        "      aggregate_gate:\n"
+        "        name: Aggregate Forward and authority gate\n"
+        "        if: "
+        + d
+        + "{{ always() && atomgit.repository == "
+        + "'depeng1994/torchtitan-npu' && atomgit.event_name == 'Manual' && "
+        + "atomgit.ref == 'refs/heads/master' }}\n"
+        "        needs: [manual_capture, manual_forward, case_os_result, case_8p_result, case_16p_result]\n"
+        "        runs-on: [ubuntu-latest, x64, small]\n"
+        "        timeout-minutes: 2\n"
+        "        steps:\n"
+        "          - name: Enforce case and aggregate outcome independently\n"
+        "            shell: bash\n"
         "            working-directory: '.'\n"
-        '            env:\n'
-        '              CAPTURE_RESULT: ' + d + '{{ needs.manual_capture.result }}\n'
-        '              FORWARD_RESULT: ' + d + '{{ needs.manual_forward.result }}\n'
-        '              FORWARD_GATE: ' + d + '{{ needs.manual_forward.outputs.forward_gate }}\n'
-        '              FORWARD_GATE_REASON: ' + d + '{{ needs.manual_forward.outputs.forward_gate_reason }}\n'
-        '              OS_RESULT: ' + d + '{{ needs.case_os_result.result }}\n'
-        '              EIGHT_P_RESULT: ' + d + '{{ needs.case_8p_result.result }}\n'
-        '              SIXTEEN_P_RESULT: ' + d + '{{ needs.case_16p_result.result }}\n'
-        '            run: |\n'
-        '              if [[ "$CAPTURE_RESULT" != success ]]; then echo aggregate_status=FAIL reason=CAPTURE_FAILED; exit 1; fi\n'
-        '              if [[ "$FORWARD_RESULT" != success ]]; then echo aggregate_status=FAIL reason=FORWARD_FAILED_OR_MISSING_OUTPUT; exit 1; fi\n'
-        '              if [[ -z "$FORWARD_GATE_REASON" ]]; then echo aggregate_status=FAIL reason=FORWARD_GATE_MISSING_OR_INVALID; exit 1; fi\n'
-        '              case "$FORWARD_GATE_REASON" in OK|SELECTED_CASE_FAILED|GITHUB_RUN_NOT_SUCCESS|PR_AUTHORITY_MISMATCH|PR_AUTHORITY_UNAVAILABLE|CONTROL_AUTHORITY_MISMATCH|CONTROL_AUTHORITY_UNAVAILABLE|CAPTURE_REVOKED) ;; *) echo aggregate_status=FAIL reason=FORWARD_GATE_REASON_INVALID; exit 1;; esac\n'
-        '              if [[ "$FORWARD_GATE" == success && "$FORWARD_GATE_REASON" != OK ]]; then echo aggregate_status=FAIL reason=FORWARD_GATE_REASON_MISMATCH; exit 1; fi\n'
-        '              if [[ "$FORWARD_GATE" != success ]]; then echo "aggregate_status=FAIL reason=$FORWARD_GATE_REASON"; exit 1; fi\n'
-        '              if [[ "$OS_RESULT" != success ]]; then echo aggregate_status=FAIL reason=OS_CASE_DISPLAY_FAILED; exit 1; fi\n'
-        '              if [[ "$EIGHT_P_RESULT" != success ]]; then echo aggregate_status=FAIL reason=8P_CASE_DISPLAY_FAILED; exit 1; fi\n'
-        '              if [[ "$SIXTEEN_P_RESULT" != success ]]; then echo aggregate_status=FAIL reason=16P_CASE_DISPLAY_FAILED; exit 1; fi\n'
-        '              echo aggregate_status=PASS historical_only=true current_authority=NOT_PROVIDED\n'
+        "            env:\n"
+        "              CAPTURE_RESULT: " + d + "{{ needs.manual_capture.result }}\n"
+        "              FORWARD_RESULT: " + d + "{{ needs.manual_forward.result }}\n"
+        "              FORWARD_GATE: " + d + "{{ needs.manual_forward.outputs.forward_gate }}\n"
+        "              FORWARD_GATE_REASON: " + d + "{{ needs.manual_forward.outputs.forward_gate_reason }}\n"
+        "              OS_RESULT: " + d + "{{ needs.case_os_result.result }}\n"
+        "              EIGHT_P_RESULT: " + d + "{{ needs.case_8p_result.result }}\n"
+        "              SIXTEEN_P_RESULT: " + d + "{{ needs.case_16p_result.result }}\n"
+        "            run: |\n"
+        '              fail() { echo "aggregate_status=FAIL reason=$1"; exit 1; }\n'
+        '              [[ "$CAPTURE_RESULT" == success ]] || fail CAPTURE_FAILED\n'
+        '              [[ "$FORWARD_RESULT" == success ]] || fail FORWARD_FAILED_OR_MISSING_OUTPUT\n'
+        '              [[ -n "$FORWARD_GATE_REASON" ]] || fail FORWARD_GATE_MISSING_OR_INVALID\n'
+        '              allowed_reasons=" OK SELECTED_CASE_FAILED GITHUB_RUN_NOT_SUCCESS "\n'
+        '              allowed_reasons+=" PR_AUTHORITY_MISMATCH PR_AUTHORITY_UNAVAILABLE "\n'
+        '              allowed_reasons+=" CONTROL_AUTHORITY_MISMATCH CONTROL_AUTHORITY_UNAVAILABLE CAPTURE_REVOKED "\n'
+        '              if [[ "$FORWARD_GATE" != success && "$FORWARD_GATE" != failure ]]; then\n'
+        "                fail FORWARD_GATE_MISSING_OR_INVALID\n"
+        "              fi\n"
+        '              [[ "$allowed_reasons" == *" $FORWARD_GATE_REASON "* ]] || fail FORWARD_GATE_REASON_INVALID\n'
+        '              if [[ "$FORWARD_GATE" == success && "$FORWARD_GATE_REASON" != OK ]]; then\n'
+        "                fail FORWARD_GATE_REASON_MISMATCH\n"
+        "              fi\n"
+        '              [[ "$FORWARD_GATE" == success ]] || fail "$FORWARD_GATE_REASON"\n'
+        '              [[ "$OS_RESULT" == success ]] || fail OS_CASE_DISPLAY_FAILED\n'
+        '              [[ "$EIGHT_P_RESULT" == success ]] || fail 8P_CASE_DISPLAY_FAILED\n'
+        '              [[ "$SIXTEEN_P_RESULT" == success ]] || fail 16P_CASE_DISPLAY_FAILED\n'
+        "              echo aggregate_status=PASS historical_only=true current_authority=NOT_PROVIDED\n"
     )
     return header, digest
 
