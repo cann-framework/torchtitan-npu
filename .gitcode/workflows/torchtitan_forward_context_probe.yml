@@ -2,6 +2,8 @@
 # source execution, dispatch, publication or hardware allocation.
 name: TorchTitan Personal GitCode Context Prevalidation
 on:
+  pull_request_target:
+    branches: [master]
   workflow_dispatch:
 permissions:
   repository: read
@@ -11,7 +13,8 @@ stages:
     name: Observe documented hosted Action context
     jobs:
       context:
-        # Manual-only diagnostics; API caller pins personal repository and SHA.
+        # Repository identity observed in a real personal hosted run.
+        if: ${{ atomgit.repository == 'depeng1994/torchtitan-npu' }}
         name: P0 metadata only - not Forward acceptance
         runs-on: [ubuntu-latest, x64, small]
         steps:
