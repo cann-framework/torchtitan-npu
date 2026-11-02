@@ -37,3 +37,73 @@ Bridge YAML 仍在非注册模板目录，不启用自动 MR 权限路径。
 两步探针每步环境变量 20/7，总计固定 42 字段；真实 manual run 曾完成，
 个人 PR 原始来源证据仍需独立观察。权重训练、硬件执行、正式 CANN GitCode
 PR 门禁均不因该 CPU 回归或 manual 结果自动视为通过。
+
+## Hosted Manual capture 开发入口
+
+`.gitcode/workflows/torchtitan_forward_manual.yml` 是独立的个人仓手动预验证入口，
+只接受 `workflow_dispatch`，且运行上下文必须为实测的 `Manual`、个人仓 master、
+attempt 1。它不是原始 PR 事件适配器；不能用其成功结果授权合入当前 PR。
+每次只选 `worker_os_blue`（无 NPU）或 `dispatch_smoke_8p`（无权重、75 秒任务预算）。
+平台调度、排队及准备时间不包含在 75 秒中，也不保证总时长。
+
+两个 Hosted jobs 不共享文件系统：
+
+1. `manual_capture` 的唯一 step `Capture manual request` 使用平台
+   `ATOMGIT_TOKEN` 读取同仓 PR 当前快照及控制版本，输出一行限长、规范化的请求。
+   不 checkout、不执行 PR 源码，不输出凭据。生成器固定完整 inline script；
+   Worker 从真实 job API 独立核对该脚本 hash、step 状态、日志和时间边界。
+2. `manual_forward` 独立读取前一 job 的完整日志，两次核验一致后派发组织 GitHub
+   workflow `381287884`。GitHub GET 使用公开只读访问，只有固定 dispatch POST
+   使用 `LITE_ACTIONS_GITHUB_TOKEN`。响应不确定时只按 nonce 查找既有 run，不重发 POST。
+   等待实际 Prepare、Waiter、result 三个固定 jobs 成功，否则失败关闭。
+
+GitCode v8 的日志时间戳只允许按已实测格式剥离一次；任意前缀、重复请求及变更的
+脚本均拒绝。`ATOMGIT_RUN_ID` 提供真实 run ID；空的 `workflow_sha` 不以 head SHA
+冒充来源证明。这里的权威是实际 GitHub dispatch 操作者与固定控制代码，GitCode
+手动 capture 只是一次当前观察，不证明原始 PR 事件顺序。
+
+成功输出明确区分历史执行与当前权限：
+
+```json
+{
+  "historical_execution_result": "PASS",
+  "current_authority": "NOT_PROVIDED",
+  "not_current_merge_authorization": true,
+  "merge_gate": "NOT_PROVIDED"
+}
+```
+
+最终 H/B 重读相等不能排除已发生的 A→B→A 撤销。因此不将 GitCode job 绿色解释为
+当前 PR 门禁通过。正式 CANN 自动路径仍需新鲜、绑定具体代际的 authority proof。
+现有 GitHub Waiter 与 Blue 的来源、固定 Check 和代际校验不因此放宽。
+
+### 启用前置条件（需逐项实测）
+
+- 审核后把同一新控制提交发布至个人 GitCode master 和组织 GitHub master，更新
+  `LITE_GITCODE_BRIDGE_SHA`、可信配置的控制 pin 和 Runner Bundle digest。
+- 部署支持 `gitcode_manual_capture`、state 6 的已审 Worker SDK，GitHub Hosted SDK
+  pin 同步；Blue 的 `manual_capture` 配置绑定真实注册 workflow ID、路径、job
+  `manual_capture`、step identifier `1`、上述 step name、完整脚本 SHA、shell `bash`、
+  working directory `.` 及 `request_authority=github_dispatch_operator`。
+- 确认个人 Actions 启用；注册后的 workflow ID 不从文件名猜测。
+- 明确授权配置 `LITE_ACTIONS_GITHUB_TOKEN`（仅目标组织仓 Actions write、Metadata
+  read，短期有效），不使用 Checks App 私钥作为 dispatch 凭据。
+- 实测自动 `ATOMGIT_TOKEN` 能读取同仓 PR、run、jobs 和日志。当前只声明仓库/PR/项目
+  read 权限；若平台拒绝则停止并确认最小权限，不能暗中上传本地 PAT。
+- GitHub 公开 API 的匿名读取受平台速率限制；限流/权限不足会失败关闭，不自动扩大
+  token 权限。受保护 NPU 资源仍由 Blue lease/quarantine 控制，不在 Hosted job 使用。
+
+这些是部署检查项，不表示已经配置或完成真实端到端验收。
+
+### 修改与 CPU 验证
+
+从仓库根目录重新生成受审脚本和 workflow：
+
+```bash
+python3 -B .gitcode/scripts/build_hosted_manual_workflow.py
+```
+
+生成器输出 `capture_script_sha256`，必须与 Worker 可信配置一致。生成文件不得绕过
+源脚本手工修改。`tests/unit_tests/tooling/gitcode_hosted/test_hosted_manual.py`
+使用合成 API 覆盖脚本/日志绑定、真实 SDK 编码契约、权限边界、单次派发恢复、超时及
+历史结果语义；不代表真实平台、NPU 或完整产品 UT。无需导入 torch 或初始化 NPU。
