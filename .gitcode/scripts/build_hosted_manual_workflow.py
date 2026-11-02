@@ -77,10 +77,10 @@ stages:
             "atomgit.event_name == 'Manual' && atomgit.ref == 'refs/heads/master' }}\n"
         )
         if key == "manual_forward":
-            header += "        needs: [manual_capture]\n"
+            header += '        needs: [manual_capture]\n        outputs:\n          case_os_result: ${{ steps.manual_forward.outputs.case_os_result }}\n          case_8p_result: ${{ steps.manual_forward.outputs.case_8p_result }}\n          case_16p_result: ${{ steps.manual_forward.outputs.case_16p_result }}\n'
         header += (
             "        runs-on: [ubuntu-latest, x64, small]\n        timeout-minutes: 20\n"
-            "        steps:\n          - name: "
+            "        steps:\n          - id: " + key + "\n            name: "
             + name
             + "\n            shell: bash\n            working-directory: '.'\n            env:\n"
         )
@@ -109,11 +109,19 @@ stages:
             "        steps:\n          - name: Publish " + label + "\n"
             "            shell: bash\n            working-directory: '.'\n            env:\n"
         )
-        values = dict(env)
-        values.update(
-            RESULT_CASE=case_id,
-            CAPTURE_RESULT="${{ needs.manual_capture.result }}",
-        )
+        output_name = {
+            "worker_os_blue": "case_os_result",
+            "dispatch_smoke_8p": "case_8p_result",
+            "dispatch_smoke_16p": "case_16p_result",
+        }[case_id]
+        values = {
+            "RESULT_CASE": case_id,
+            "CASE_EVIDENCE": "${{ needs.manual_forward.outputs." + output_name + " }}",
+            "CAPTURE_RESULT": "${{ needs.manual_capture.result }}",
+            "CAPTURE_RUN_ID": "${{ atomgit.run_id }}",
+            "CAPTURE_ATTEMPT": "${{ atomgit.run_attempt }}",
+            "CONTROL_SHA": "${{ vars.LITE_GITCODE_BRIDGE_SHA }}",
+        }
         for field, value in values.items():
             header += "              " + field + ": " + value + "\n"
         header += "            run: |\n" + "".join(

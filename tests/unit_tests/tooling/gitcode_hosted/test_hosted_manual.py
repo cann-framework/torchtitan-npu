@@ -4,6 +4,8 @@ import copy
 import hashlib
 import io
 import json
+import tempfile
+import urllib.error
 import zipfile
 import sys
 import unittest
@@ -172,6 +174,7 @@ class FakeAPI:
         self.plan_archive = None
         self.artifact_metadata = None
         self.case_checks = []
+        self.fail_cases = set()
         self.completed_jobs = [
             {"id": 31 if name == "prepare-gitcode" else 32, "name": name, "status": "completed", "conclusion": "success", "run_id": 42, "run_attempt": 1}
             for name in ("prepare-gitcode", "wait-gitcode", "Lite-Actions-GitCode-Smoke")
@@ -197,11 +200,11 @@ class FakeAPI:
             return {"start_offset": 0, "end_offset": len(self.log), "has_more": False, "log": self.log}
         raise AssertionError(suffix)
 
-    def download_public_artifact(self, artifact_id):
+    def download_authenticated_artifact(self, artifact_id):
         assert artifact_id == 77
         return self.plan_archive
 
-    def gh(self, suffix, *, body=None, dispatch=False):
+    def gh(self, suffix, *, body=None, dispatch=False, authenticated_read=False):
         self.calls.append(("gh", suffix, body))
         if suffix == "":
             return {"id": common.GH_ID, "full_name": common.GH_REPO, "default_branch": "master"}
@@ -236,6 +239,15 @@ class FakeAPI:
                 fake_check(self.plan, self.receipt, case_id, slot["id"])
                 for case_id, slot in self.plan["result_slots"].items()
             ]
+            for check in self.case_checks:
+                if any(case_id in check.get("name", "") for case_id in self.fail_cases):
+                    envelope = json.loads(check["output"]["summary"])
+                    envelope["result"]["status"] = "FAIL"
+                    envelope["result"]["exit_code"] = 1
+                    check["output"]["summary"] = json.dumps(
+                        envelope, sort_keys=True, separators=(",", ":")
+                    )
+                    check["conclusion"] = "failure"
             if not self.drop_dispatch:
                 self.gh_run = {
                     "id": 42,
@@ -313,7 +325,7 @@ class HostedManualTests(unittest.TestCase):
         )
         return dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
 
-    def test_two_job_generated_workflow_is_exact_and_secret_is_dispatch_only(self):
+    def test_generated_workflow_uses_forward_job_outputs_without_result_job_tokens(self):
         content, digest = builder.render()
         self.assertEqual(builder.OUTPUT.read_text(), content)
         self.assertTrue(all(line == line.rstrip() for line in content.splitlines()))
@@ -338,6 +350,9 @@ class HostedManualTests(unittest.TestCase):
             self.assertEqual("LITE_ACTIONS_GITHUB_TOKEN" in step["env"], name == "manual_forward")
             if name.startswith("case_"):
                 self.assertNotIn("LITE_ACTIONS_GITHUB_TOKEN", step["env"])
+                self.assertNotIn("ATOMGIT_TOKEN", step["env"])
+                self.assertIn("CASE_EVIDENCE", step["env"])
+                self.assertIn("needs.manual_forward.outputs.", step["env"]["CASE_EVIDENCE"])
             self.assertIn("python3 -I -B", step["run"])
             self.assertNotIn("from hosted_manual_common", step["run"])
         self.assertEqual(hashlib.sha256(jobs["manual_capture"]["steps"][0]["run"].encode()).hexdigest(), digest)
@@ -808,8 +823,15 @@ class HostedManualTests(unittest.TestCase):
             return result
 
         self.api.gh = failed
-        with self.assertRaisesRegex(common.ManualForwardError, "GITHUB_FORWARD_FAILED"):
-            dispatch.forward(self.api, intent, clock=lambda: self.now, progress=events.append)
+        case_id = dispatch.CASE_ORDER["dispatch_smoke_16p"]
+        self.api.fail_cases.add(case_id)
+        result = dispatch.forward(self.api, intent, clock=lambda: self.now, progress=events.append)
+        self.assertFalse(result["selected_cases_pass"])
+        self.assertEqual(
+            next(row for row in result["case_results"] if row["test_id"] == "dispatch_smoke_16p")["case_status"],
+            "FAIL",
+        )
+        self.assertEqual(set(result["case_job_outputs"]), set(dispatch.CASE_OUTPUTS.values()))
         self.assertEqual(
             events,
             [
@@ -989,7 +1011,7 @@ class HostedManualTests(unittest.TestCase):
             dispatch.forward(self.api, intent, clock=lambda: self.now)
         self.api.gh_run["actor"] = {"login": "depeng1994"}
         self.api.completed_jobs[-1]["conclusion"] = "skipped"
-        with self.assertRaisesRegex(common.ManualForwardError, "NOT_PASS"):
+        with self.assertRaisesRegex(common.ManualForwardError, "FIXED_RESULT_JOB_IDENTITY_INVALID"):
             dispatch.forward(self.api, intent, clock=lambda: self.now)
 
     def test_public_github_reads_never_receive_dispatch_credential(self):
@@ -1006,6 +1028,219 @@ class HostedManualTests(unittest.TestCase):
         self.assertEqual(api.opener.open.call_args.args[0].get_header("Authorization"), "Bearer synthetic-github")
         with self.assertRaisesRegex(common.ManualForwardError, "CANNOT_WRITE"):
             api.gh("/issues", body={})
+
+    def test_authenticated_plan_reads_and_signed_artifact_redirect_are_forward_only(self):
+        api = common.API({"ATOMGIT_TOKEN": "synthetic-gitcode", "LITE_ACTIONS_GITHUB_TOKEN": "synthetic-github"})
+        response = Mock()
+        response.__enter__ = lambda _: response
+        response.__exit__ = lambda *a: False
+        response.read.return_value = b"{}"
+        api.opener.open = Mock(return_value=response)
+        api.gh("/branches/master")
+        self.assertNotIn("Authorization", dict(api.opener.open.call_args.args[0].header_items()))
+        api.gh("/actions/artifacts/77", authenticated_read=True)
+        request = api.opener.open.call_args.args[0]
+        self.assertEqual(request.get_header("Authorization"), "Bearer synthetic-github")
+        with self.assertRaisesRegex(common.ManualForwardError, "ROUTE_NOT_ALLOWED"):
+            api.gh("/issues/1", authenticated_read=True)
+        with self.assertRaisesRegex(common.ManualForwardError, "CANNOT_WRITE"):
+            api.gh("/check-runs/77", body={}, authenticated_read=True)
+
+        import email.message
+        blob = b"synthetic-bounded-plan-zip"
+        redirect_headers = email.message.Message()
+        redirect_headers["Location"] = "https://productionresults.blob.core.windows.net/container/plan.zip?sig=synthetic-secret"
+        redirect = urllib.error.HTTPError(
+            "https://api.github.com/repos/" + common.GH_REPO + "/actions/artifacts/77/zip",
+            302, "Found", redirect_headers, None,
+        )
+        blob_response = Mock()
+        blob_response.__enter__ = lambda _: blob_response
+        blob_response.__exit__ = lambda *a: False
+        blob_response.read.return_value = blob
+        api.opener.open = Mock(side_effect=[redirect, blob_response])
+        with patch("sys.stdout", io.StringIO()) as stdout:
+            self.assertEqual(api.download_authenticated_artifact(77), blob)
+            self.assertNotIn("synthetic-secret", stdout.getvalue())
+        first, second = [call.args[0] for call in api.opener.open.call_args_list]
+        self.assertEqual(first.get_header("Authorization"), "Bearer synthetic-github")
+        self.assertIsNone(second.get_header("Authorization"))
+        self.assertEqual(second.full_url.split("?", 1)[0], "https://productionresults.blob.core.windows.net/container/plan.zip")
+
+    def test_no_admission_receipt_is_published_as_authenticated_not_run_without_generation(self):
+        intent = self.emit()
+        plan, receipt = fake_plan_and_receipt(intent)
+        self.api.case_checks = [
+            fake_check(plan, receipt, case_id, slot["id"])
+            for case_id, slot in plan["result_slots"].items()
+        ]
+        aggregate = next(check for check in self.api.case_checks if check["id"] == plan["result_slots"]["aggregate"]["id"])
+        aggregate["status"] = "in_progress"
+        aggregate["conclusion"] = None
+        aggregate["output"]["summary"] = json.dumps({
+            "schema": 4,
+            "phase": "SLOT_CREATED",
+            "request_id": f"{common.GH_ID}/42/1",
+            "plan_digest": plan["plan_digest"],
+            "case_id": "aggregate",
+            "request_spec_digest": plan["request_spec_digest"],
+        }, sort_keys=True, separators=(",", ":"))
+        observed_receipt = dispatch.read_admission_receipt(self.api, plan, intent)
+        self.assertIsNone(observed_receipt)
+        check = next(check for check in self.api.case_checks if check["id"] == plan["result_slots"]["case_000_worker_os_blue"]["id"])
+        result = {
+            "test_id": "worker_os_blue",
+            "case_id": "case_000_worker_os_blue",
+            "case_status": "NOT_RUN",
+            "reason": "No Admission Receipt was published; no Case execution was authorized",
+            "selected": True,
+            "check_id": check["id"],
+            "check_conclusion": None,
+            "cleanup_verified": None,
+            "exit_code": None,
+            "case_check_url": check["html_url"],
+            "case_log_url": check["html_url"],
+            "current_pr_matches": True,
+        }
+        encoded = dispatch.encode_case_evidence(
+            intent, plan, None, result, control_matches=True,
+            workflow_conclusion="failure",
+        )
+        body = dispatch.decode_case_evidence({
+            "RESULT_CASE": "worker_os_blue",
+            "CASE_EVIDENCE": encoded,
+            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+            "CAPTURE_ATTEMPT": "1",
+            "CONTROL_SHA": intent["control_sha"],
+        })
+        self.assertIsNone(body["identity"]["receipt"])
+        self.assertEqual(body["case_status"], "NOT_RUN")
+
+    def test_case_evidence_job_output_is_fixed_bounded_and_self_binding(self):
+        intent = self.emit()
+        plan, receipt = fake_plan_and_receipt(intent)
+        self.api.case_checks = [
+            fake_check(plan, receipt, case_id, slot["id"])
+            for case_id, slot in plan["result_slots"].items()
+        ]
+        result = dispatch.case_check(
+            self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True
+        )
+        encoded = dispatch.encode_case_evidence(
+            intent, plan, receipt, result, control_matches=True,
+            workflow_conclusion="success",
+        )
+        environment = {
+            "RESULT_CASE": "worker_os_blue",
+            "CASE_EVIDENCE": encoded,
+            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+            "CAPTURE_ATTEMPT": "1",
+            "CONTROL_SHA": intent["control_sha"],
+            "CAPTURE_RESULT": "success",
+        }
+        body = dispatch.decode_case_evidence(environment)
+        self.assertEqual(body["case_status"], "PASS")
+        self.assertEqual(body["identity"]["receipt"]["execution_generation"], 2)
+        self.assertTrue(body["observation"]["historical_only"])
+
+        changed = dict(environment)
+        changed["RESULT_CASE"] = "dispatch_smoke_8p"
+        with self.assertRaisesRegex(common.ManualForwardError, "BODY_INVALID"):
+            dispatch.decode_case_evidence(changed)
+        changed = dict(environment)
+        changed["CAPTURE_RUN_ID"] = "other-run"
+        with self.assertRaisesRegex(common.ManualForwardError, "IDENTITY_INVALID"):
+            dispatch.decode_case_evidence(changed)
+        changed = dict(environment)
+        changed["CASE_EVIDENCE"] = encoded[:-1] + ("A" if encoded[-1] != "A" else "B")
+        with self.assertRaisesRegex(common.ManualForwardError, "DIGEST_MISMATCH|INVALID"):
+            dispatch.decode_case_evidence(changed)
+
+        with tempfile.NamedTemporaryFile() as output:
+            dispatch.write_case_job_outputs(
+                {name: encoded for name in dispatch.CASE_OUTPUTS.values()},
+                output_path=output.name,
+            )
+            output.seek(0)
+            rows = output.read().decode().splitlines()
+        self.assertEqual([row.split("=", 1)[0] for row in rows], [
+            "case_os_result", "case_8p_result", "case_16p_result"
+        ])
+        self.assertTrue(all(len(row.split("=", 1)[1]) <= 32 * 1024 for row in rows))
+
+    def test_selected_case_check_read_error_keeps_verified_run_link_in_bounded_evidence(self):
+        intent = self.emit()
+        plan, receipt = fake_plan_and_receipt(intent)
+        result = {
+            "test_id": "dispatch_smoke_8p",
+            "case_id": dispatch.CASE_ORDER["dispatch_smoke_8p"],
+            "case_status": "INFRA_ERROR",
+            "reason": "CASE_EVIDENCE_READ_FAILED:API_GITHUB_CHECK_HTTP_403",
+            "selected": True,
+            "check_id": None,
+            "check_conclusion": None,
+            "cleanup_verified": None,
+            "exit_code": None,
+            "case_check_url": None,
+            "case_log_url": f"https://github.com/{common.GH_REPO}/actions/runs/42",
+            "current_pr_matches": True,
+        }
+        encoded = dispatch.encode_case_evidence(
+            intent, plan, receipt, result, control_matches=True,
+            workflow_conclusion="success",
+        )
+        body = dispatch.decode_case_evidence({
+            "RESULT_CASE": "dispatch_smoke_8p",
+            "CASE_EVIDENCE": encoded,
+            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+            "CAPTURE_ATTEMPT": "1",
+            "CONTROL_SHA": intent["control_sha"],
+        })
+        self.assertEqual(body["case_status"], "INFRA_ERROR")
+        self.assertEqual(body["case_log_url"], result["case_log_url"])
+        self.assertIsNone(body["case_check_url"])
+
+    def test_cancelled_case_evidence_keeps_cancelled_status_and_display_job_fails(self):
+        intent = self.emit()
+        plan, receipt = fake_plan_and_receipt(intent)
+        self.api.case_checks = [
+            fake_check(plan, receipt, case_id, slot["id"])
+            for case_id, slot in plan["result_slots"].items()
+        ]
+        result = dispatch.case_check(
+            self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True
+        )
+        body = dispatch.decode_case_evidence({
+            "RESULT_CASE": "worker_os_blue",
+            "CASE_EVIDENCE": dispatch.encode_case_evidence(
+                intent, plan, receipt, result, control_matches=True,
+                workflow_conclusion="cancelled",
+            ),
+            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+            "CAPTURE_ATTEMPT": "1",
+            "CONTROL_SHA": intent["control_sha"],
+        })
+        body["case_status"] = "CANCELLED"
+        body["reason"] = "GitHub cancelled the case before completion"
+        body["check_conclusion"] = "cancelled"
+        raw = common.canonical(body)
+        encoded = __import__("base64").urlsafe_b64encode(common.canonical({
+            "body": body, "evidence_digest": hashlib.sha256(raw).hexdigest()
+        })).decode().rstrip("=")
+        environment = {
+            "RESULT_CASE": "worker_os_blue",
+            "CASE_EVIDENCE": encoded,
+            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+            "CAPTURE_ATTEMPT": "1",
+            "CONTROL_SHA": intent["control_sha"],
+            "CAPTURE_RESULT": "success",
+        }
+        self.assertEqual(dispatch.decode_case_evidence(environment)["case_status"], "CANCELLED")
+        with patch("sys.stdout", io.StringIO()) as output:
+            self.assertEqual(dispatch.display_case_main(environment), 1)
+            rendered = json.loads(output.getvalue())
+        self.assertEqual(rendered["case_status"], "CANCELLED")
+        self.assertEqual(rendered["case_log_url"], result["case_log_url"])
 
     def test_generated_inline_programs_execute_same_boundaries_without_source_import(self):
         for script, name in zip(builder.scripts()[:2], ("capture", "forward"), strict=True):

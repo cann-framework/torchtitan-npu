@@ -410,7 +410,7 @@ def strict_json(raw, *, limit):
 
 
 def read_plan_artifact(api, intent, run_id):
-    listing = api.gh(f"/actions/runs/{run_id}/artifacts?name=lite-ci-request-1&per_page=10&page=1")
+    listing = api.gh(f"/actions/runs/{run_id}/artifacts?name=lite-ci-request-1&per_page=10&page=1", authenticated_read=True)
     rows = listing.get("artifacts") if isinstance(listing, dict) else None
     require(
         isinstance(rows, list) and type(listing.get("total_count")) is int
@@ -420,7 +420,7 @@ def read_plan_artifact(api, intent, run_id):
     artifact_id = rows[0].get("id")
     require(type(artifact_id) is int and artifact_id > 0 and rows[0].get("name") == "lite-ci-request-1",
             "GITHUB_PLAN_ARTIFACT_IDENTITY_INVALID")
-    metadata = api.gh(f"/actions/artifacts/{artifact_id}")
+    metadata = api.gh(f"/actions/artifacts/{artifact_id}", authenticated_read=True)
     owner = metadata.get("workflow_run") or {}
     digest_value = metadata.get("digest")
     require(
@@ -433,7 +433,7 @@ def read_plan_artifact(api, intent, run_id):
         and isinstance(digest_value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", digest_value),
         "GITHUB_PLAN_ARTIFACT_OWNER_OR_DIGEST_MISMATCH",
     )
-    archive = api.download_public_artifact(artifact_id)
+    archive = api.download_authenticated_artifact(artifact_id)
     require(
         len(archive) == metadata["size_in_bytes"] and hashlib.sha256(archive).hexdigest() == digest_value[7:],
         "GITHUB_PLAN_ARTIFACT_ZIP_DIGEST_MISMATCH",
@@ -553,7 +553,7 @@ def read_fixed_check(api, plan, case_id):
     expected = expected_slot(plan, case_id)
     require(set(slot) == {"id", *expected} and all(slot.get(k) == v for k, v in expected.items()),
             "IMMUTABLE_PLAN_CHECK_SLOT_MISMATCH")
-    check = api.gh(f"/check-runs/{slot['id']}")
+    check = api.gh(f"/check-runs/{slot['id']}", authenticated_read=True)
     run_id = plan["github"]["run_id"]
     require(
         type(check.get("id")) is int and check["id"] == slot["id"]
@@ -574,10 +574,27 @@ def read_admission_receipt(api, plan, intent):
     envelope = strict_json(summary.encode(), limit=32 * 1024) if isinstance(summary, str) else None
     require(
         envelope is not None and envelope.get("schema") == 4
-        and envelope.get("phase") in {"ADMITTED", "AGGREGATE_RESULT"}
         and envelope.get("plan_digest") == plan["plan_digest"],
         "ADMISSION_CHECK_ENVELOPE_INVALID",
     )
+    if envelope.get("phase") == "SLOT_CREATED":
+        expected_created = {
+            "schema": 4,
+            "phase": "SLOT_CREATED",
+            "request_id": f"{GH_ID}/{plan['github']['run_id']}/1",
+            "plan_digest": plan["plan_digest"],
+            "case_id": "aggregate",
+            "request_spec_digest": plan["request_spec_digest"],
+        }
+        require(
+            canonical(envelope) == canonical(expected_created)
+            and check.get("status") in {"queued", "in_progress"}
+            and check.get("conclusion") is None,
+            "ADMISSION_SLOT_CREATED_ENVELOPE_INVALID",
+        )
+        return None
+    require(envelope.get("phase") in {"ADMITTED", "AGGREGATE_RESULT"},
+            "ADMISSION_CHECK_ENVELOPE_INVALID")
     receipt = envelope.get("receipt")
     expected = {
         "request_id": f"{GH_ID}/{plan['github']['run_id']}/1",
@@ -658,6 +675,7 @@ def case_check(api, intent, plan, receipt, run_id, test_id, *, run_conclusion="f
             "case_check_url": None, "case_log_url": None,
             "historical_only": True, "current_authority": "NOT_PROVIDED",
             "current_pr_matches": pr_matches, "selected": False,
+            "check_conclusion": None, "cleanup_verified": None, "exit_code": None,
         }
     check = read_fixed_check(api, plan, case_id)
     html = check.get("html_url")
@@ -679,7 +697,9 @@ def case_check(api, intent, plan, receipt, run_id, test_id, *, run_conclusion="f
             "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
             "case_check_url": html, "case_log_url": html, "check_id": check["id"],
             "historical_only": True, "current_authority": "NOT_PROVIDED",
-            "current_pr_matches": pr_matches,
+            "current_pr_matches": pr_matches, "selected": True,
+            "check_conclusion": check.get("conclusion"),
+            "cleanup_verified": None, "exit_code": None,
         }
     summary = (check.get("output") or {}).get("summary")
     envelope = strict_json(summary.encode(), limit=32 * 1024) if isinstance(summary, str) else None
@@ -736,95 +756,323 @@ def case_check(api, intent, plan, receipt, run_id, test_id, *, run_conclusion="f
         "execution_generation": receipt["execution_generation"],
         "publication_revision": receipt["publication_revision"],
         "historical_only": True, "current_authority": "NOT_PROVIDED",
-        "current_pr_matches": pr_matches,
+        "current_pr_matches": pr_matches, "selected": True,
+        "check_conclusion": check.get("conclusion"),
+        "cleanup_verified": result["cleanup_verified"],
+        "exit_code": result["exit_code"],
     }
 
 
 
-def result_exit_code(result):
-    # An audited legacy OS-only request has explicit NOT_RUN rows for the two
-    # unselected cases; they are not failed executions and must not break OS.
-    return 0 if result.get("case_status") == "PASS" or result.get("selected") is False else 1
+CASE_OUTPUTS = {
+    "worker_os_blue": "case_os_result",
+    "dispatch_smoke_8p": "case_8p_result",
+    "dispatch_smoke_16p": "case_16p_result",
+}
 
 
-def result_main():
-    case = os.environ.get("RESULT_CASE", "unknown")
-    run_id = None
+def encode_case_evidence(intent, plan, receipt, result, *, control_matches, workflow_conclusion):
+    test_id = result["test_id"]
+    case_id = CASE_ORDER[test_id]
+    body = {
+        "schema": 1,
+        "phase": "CASE_DISPLAY_EVIDENCE",
+        "test_id": test_id,
+        "case_id": case_id,
+        "selected": result["selected"],
+        "case_status": result["case_status"],
+        "reason": result["reason"],
+        "check_id": result.get("check_id"),
+        "check_conclusion": result.get("check_conclusion"),
+        "cleanup_verified": result.get("cleanup_verified"),
+        "exit_code": result.get("exit_code"),
+        "github_run_id": plan["github"]["run_id"],
+        "github_run_attempt": plan["github"]["run_attempt"],
+        "workflow_conclusion": workflow_conclusion,
+        "github_run_url": "https://github.com/" + GH_REPO + "/actions/runs/" + str(plan["github"]["run_id"]),
+        "case_check_url": result.get("case_check_url"),
+        "case_log_url": result.get("case_log_url"),
+        "identity": {
+            "repo_id": GH_ID,
+            "capture_run_id": intent["bridge"]["bridge_action_run"],
+            "capture_attempt": intent["bridge"]["bridge_attempt"],
+            "bridge_nonce": intent["bridge"]["bridge_nonce"],
+            "request_id": (
+                receipt["request_id"]
+                if receipt is not None
+                else f"{GH_ID}/{plan['github']['run_id']}/1"
+            ),
+            "control_sha": intent["control_sha"],
+            "plan_digest": plan["plan_digest"],
+            "request_spec_digest": plan["request_spec_digest"],
+            "receipt": receipt,
+            "receipt_digest": (
+                hashlib.sha256(canonical(receipt)).hexdigest()
+                if receipt is not None else None
+            ),
+        },
+        "observation": {
+            "current_pr_matches": result.get("current_pr_matches") is True,
+            "current_control_matches": control_matches is True,
+            "historical_only": True,
+            "current_authority": "NOT_PROVIDED",
+            "not_current_merge_authorization": True,
+        },
+    }
+    encoded = canonical(body)
+    envelope = {
+        "body": body,
+        "evidence_digest": hashlib.sha256(encoded).hexdigest(),
+    }
+    raw = canonical(envelope)
+    require(len(raw) <= 24 * 1024, "CASE_DISPLAY_EVIDENCE_TOO_LARGE")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def write_case_job_outputs(outputs, *, output_path=None):
+    path = output_path or os.environ.get("ATOMGIT_OUTPUT")
+    require(isinstance(path, str) and path and len(path) <= 4096, "ATOMGIT_OUTPUT_REQUIRED")
+    require(set(outputs) == set(CASE_OUTPUTS.values()), "CASE_OUTPUT_SET_INVALID")
+    rows = []
+    for key in CASE_OUTPUTS.values():
+        value = outputs[key]
+        require(isinstance(value, str) and len(value) <= 32 * 1024, "CASE_OUTPUT_VALUE_INVALID")
+        require(re.fullmatch(r"[A-Za-z0-9_-]+", value), "CASE_OUTPUT_ENCODING_INVALID")
+        rows.append(key + "=" + value + "\n")
+    flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
     try:
-        api = API(os.environ)
-        require(case in CASE_ORDER, "CASE_NOT_IN_FIXED_RESULT_SET")
-        capture_result = os.environ.get("CAPTURE_RESULT", "success")
-        if capture_result != "success":
-            payload = {
-                "test_id": case,
-                "case_status": "NOT_RUN",
-                "reason": "GitCode Capture did not complete; no GitHub execution was authorized",
-                "github_run_id": None,
-                "github_run_url": None,
-                "case_log_url": None,
-                "historical_only": True,
-                "current_authority": "NOT_PROVIDED",
+        fd = os.open(path, flags)
+        try:
+            info = os.fstat(fd)
+            require(stat.S_ISREG(info.st_mode), "ATOMGIT_OUTPUT_NOT_REGULAR_FILE")
+            with os.fdopen(fd, "a", encoding="utf-8", closefd=False) as handle:
+                handle.writelines(rows)
+                handle.flush()
+        finally:
+            os.close(fd)
+    except ManualForwardError:
+        raise
+    except Exception:
+        raise ManualForwardError("ATOMGIT_OUTPUT_WRITE_FAILED") from None
+
+
+def decode_case_evidence(environment):
+    test_id = environment.get("RESULT_CASE", "")
+    require(test_id in CASE_ORDER, "CASE_NOT_IN_FIXED_RESULT_SET")
+    expected_case_id = CASE_ORDER[test_id]
+    value = environment.get("CASE_EVIDENCE", "")
+    require(isinstance(value, str) and 0 < len(value) <= 32 * 1024, "CASE_EVIDENCE_MISSING_OR_OVERSIZED")
+    require(re.fullmatch(r"[A-Za-z0-9_-]+", value), "CASE_EVIDENCE_ENCODING_INVALID")
+    try:
+        raw = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+        envelope = strict_json(raw, limit=24 * 1024)
+    except Exception:
+        raise ManualForwardError("CASE_EVIDENCE_INVALID") from None
+    require(set(envelope) == {"body", "evidence_digest"}, "CASE_EVIDENCE_ENVELOPE_INVALID")
+    body = envelope["body"]
+    require(
+        isinstance(body, dict)
+        and hashlib.sha256(canonical(body)).hexdigest() == envelope["evidence_digest"],
+        "CASE_EVIDENCE_DIGEST_MISMATCH",
+    )
+    require(
+        set(body) == {
+            "schema", "phase", "test_id", "case_id", "selected", "case_status",
+            "reason", "check_id", "check_conclusion", "cleanup_verified", "exit_code",
+            "github_run_id", "github_run_attempt", "workflow_conclusion", "github_run_url", "case_check_url",
+            "case_log_url", "identity", "observation",
+        }
+        and body["schema"] == 1 and body["phase"] == "CASE_DISPLAY_EVIDENCE"
+        and body["test_id"] == test_id and body["case_id"] == expected_case_id
+        and type(body["selected"]) is bool
+        and body["case_status"] in {"PASS", "FAIL", "INFRA_ERROR", "CANCELLED", "TIMED_OUT", "NOT_RUN", "RESOURCE_TIMEOUT"}
+        and isinstance(body["reason"], str) and 0 < len(body["reason"]) <= 4096
+        and type(body["github_run_id"]) is int and body["github_run_id"] > 0
+        and type(body["github_run_attempt"]) is int and body["github_run_attempt"] == 1
+        and body["workflow_conclusion"] in {"success", "failure", "cancelled", "timed_out", "action_required"}
+        and body["github_run_url"] == "https://github.com/" + GH_REPO + "/actions/runs/" + str(body["github_run_id"]),
+        "CASE_EVIDENCE_BODY_INVALID",
+    )
+    identity = body["identity"]
+    require(
+        isinstance(identity, dict)
+        and set(identity) == {
+            "repo_id", "capture_run_id", "capture_attempt", "bridge_nonce",
+            "request_id", "control_sha", "plan_digest", "request_spec_digest",
+            "receipt", "receipt_digest",
+        }
+        and identity["repo_id"] == GH_ID
+        and identity["capture_run_id"] == environment.get("CAPTURE_RUN_ID")
+        and type(identity["capture_attempt"]) is int and identity["capture_attempt"] == 1
+        and identity["capture_attempt"] == int(environment.get("CAPTURE_ATTEMPT", "0"))
+        and isinstance(identity["bridge_nonce"], str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{16,100}", identity["bridge_nonce"])
+        and identity["request_id"] == str(GH_ID) + "/" + str(body["github_run_id"]) + "/1"
+        and identity["control_sha"] == environment.get("CONTROL_SHA")
+        and re.fullmatch(r"[0-9a-f]{40}", identity["control_sha"])
+        and re.fullmatch(r"[0-9a-f]{64}", identity["plan_digest"])
+        and re.fullmatch(r"[0-9a-f]{64}", identity["request_spec_digest"]),
+        "CASE_EVIDENCE_IDENTITY_INVALID",
+    )
+    receipt = identity["receipt"]
+    if receipt is None:
+        require(
+            identity["receipt_digest"] is None
+            and body["case_status"] == "NOT_RUN"
+            and body["cleanup_verified"] is None
+            and body["exit_code"] is None
+            and body["check_conclusion"] is None,
+            "CASE_EVIDENCE_NO_ADMISSION_INVALID",
+        )
+    else:
+        require(
+            isinstance(receipt, dict)
+            and set(receipt) == {
+                "request_id", "plan_digest", "request_spec_digest", "source_snapshot_id",
+                "dispatch_intent_id", "canonical_execution_id", "pr_generation",
+                "execution_generation", "publication_revision", "duplicate",
             }
-            print(json.dumps(payload, sort_keys=True))
+            and receipt["request_id"] == identity["request_id"]
+            and receipt["plan_digest"] == identity["plan_digest"]
+            and receipt["request_spec_digest"] == identity["request_spec_digest"]
+            and receipt["source_snapshot_id"] == "manual-capture:" + identity["bridge_nonce"]
+            and receipt["dispatch_intent_id"] == "manual-intent:" + identity["bridge_nonce"]
+            and isinstance(receipt["canonical_execution_id"], str) and bool(receipt["canonical_execution_id"])
+            and all(type(receipt[k]) is int and receipt[k] > 0 for k in
+                    ("pr_generation", "execution_generation", "publication_revision"))
+            and receipt["duplicate"] is False
+            and hashlib.sha256(canonical(receipt)).hexdigest() == identity["receipt_digest"],
+            "CASE_EVIDENCE_RECEIPT_INVALID",
+        )
+    observation = body["observation"]
+    require(
+        isinstance(observation, dict)
+        and set(observation) == {
+            "current_pr_matches", "current_control_matches", "historical_only",
+            "current_authority", "not_current_merge_authorization",
+        }
+        and type(observation["current_pr_matches"]) is bool
+        and type(observation["current_control_matches"]) is bool
+        and observation["historical_only"] is True
+        and observation["current_authority"] == "NOT_PROVIDED"
+        and observation["not_current_merge_authorization"] is True,
+        "CASE_EVIDENCE_OBSERVATION_INVALID",
+    )
+    if body["selected"] is False:
+        require(
+            body["case_status"] == "NOT_RUN" and body["check_id"] is None
+            and body["case_check_url"] is None and body["case_log_url"] is None,
+            "CASE_UNSELECTED_RESULT_INVALID",
+        )
+    elif body["case_status"] == "INFRA_ERROR" and body["check_id"] is None:
+        require(
+            body["case_check_url"] is None
+            and body["case_log_url"] == body["github_run_url"],
+            "CASE_INFRASTRUCTURE_RUN_LINK_INVALID",
+        )
+    else:
+        link = urllib.parse.urlparse(body["case_check_url"] or "")
+        require(
+            type(body["check_id"]) is int and body["check_id"] > 0
+            and link.scheme == "https" and link.hostname == "github.com"
+            and link.path.startswith("/" + GH_REPO + "/runs/")
+            and link.path.rsplit("/", 1)[-1].isdigit()
+            and body["case_log_url"] == body["case_check_url"],
+            "CASE_SELECTED_RESULT_LINK_INVALID",
+        )
+        if body["case_status"] == "PASS":
+            require(
+                body["cleanup_verified"] is True and body["exit_code"] == 0
+                and body["check_conclusion"] == "success",
+                "CASE_EVIDENCE_PASS_MISMATCH",
+            )
+        elif body["case_status"] == "CANCELLED":
+            require(body["check_conclusion"] == "cancelled", "CASE_EVIDENCE_CANCEL_MISMATCH")
+        else:
+            require(body["case_status"] != "PASS", "CASE_EVIDENCE_FALSE_PASS")
+    return body
+
+
+def display_case_main(environment):
+    case = environment.get("RESULT_CASE", "unknown")
+    if environment.get("CAPTURE_RESULT") != "success":
+        payload = {
+            "test_id": case, "case_status": "NOT_RUN",
+            "reason": "GitCode Capture did not complete; no GitHub execution was authorized",
+            "github_run_id": None, "github_run_url": None, "case_log_url": None,
+            "historical_only": True, "current_authority": "NOT_PROVIDED",
+        }
+        print(json.dumps(payload, sort_keys=True))
+        return 1
+    try:
+        body = decode_case_evidence(environment)
+        reason = body["reason"]
+        if body["workflow_conclusion"] != "success":
+            reason += "; overall GitHub forward run concluded " + body["workflow_conclusion"] + "; aggregate is not green"
+        payload = {
+            "test_id": body["test_id"],
+            "case_id": body["case_id"],
+            "case_status": body["case_status"],
+            "reason": reason,
+            "github_run_id": body["github_run_id"],
+            "github_run_url": body["github_run_url"],
+            "case_check_url": body["case_check_url"],
+            "case_log_url": body["case_log_url"],
+            "check_id": body["check_id"],
+            "plan_digest": body["identity"]["plan_digest"],
+            "pr_generation": (
+                body["identity"]["receipt"]["pr_generation"]
+                if body["identity"]["receipt"] is not None else None
+            ),
+            "execution_generation": (
+                body["identity"]["receipt"]["execution_generation"]
+                if body["identity"]["receipt"] is not None else None
+            ),
+            "publication_revision": (
+                body["identity"]["receipt"]["publication_revision"]
+                if body["identity"]["receipt"] is not None else None
+            ),
+            "historical_only": True,
+            "current_authority": "NOT_PROVIDED",
+            "current_pr_matches": body["observation"]["current_pr_matches"],
+            "current_control_matches": body["observation"]["current_control_matches"],
+        }
+        print(json.dumps(payload, sort_keys=True))
+        if body["workflow_conclusion"] != "success":
             return 1
-        # Display-only read: authenticated capture/attempt/nonce is rechecked,
-        # but the initial 300s enrollment freshness window is not reapplied.
-        intent = retrieve_intent(api, os.environ, historical=True)
-        capture_run_id, capture_control = context(os.environ)
-        capture_run = run_identity(api, capture_run_id, capture_control)
-        require(
-            capture_run.get("status") in {"RUNNING", "COMPLETED"},
-            "HISTORICAL_CAPTURE_RUN_STATE_INVALID",
-        )
-        capture_conclusion = capture_run.get("conclusion")
-        require(
-            capture_conclusion in (None, "success", "failure", "cancelled", "timed_out", "action_required"),
-            "HISTORICAL_CAPTURE_CONCLUSION_INVALID",
-        )
-        run_id = find_run(api, intent)
-        require(run_id is not None, "EXACT_GITHUB_RUN_NOT_FOUND")
-        run = api.gh(f"/actions/runs/{run_id}")
-        validate_github_run(run, intent)
-        require(run.get("status") == "completed", "GITHUB_RUN_NOT_TERMINAL")
-        plan = read_plan_artifact(api, intent, run_id)
-        receipt = read_admission_receipt(api, plan, intent)
-        pr_matches = current_pr_matches(api, intent)
-        control_matches = current_control_matches(api, intent["control_sha"])
-        result = case_check(
-            api, intent, plan, receipt, run_id, case,
-            run_conclusion=run.get("conclusion"), pr_matches=pr_matches,
-        )
-        print(json.dumps(result, sort_keys=True))
-        return result_exit_code(result)
+        return result_exit_code({"case_status": body["case_status"], "selected": body["selected"]})
     except Exception as error:
         code = str(error) if isinstance(error, ManualForwardError) else type(error).__name__
         payload = {
-            "test_id": case,
-            "case_status": "INFRA_ERROR",
-            "reason": "MANUAL_FORWARD_FAILED:" + code,
-            "github_run_id": run_id,
-            "github_run_url": (
-                f"https://github.com/{GH_REPO}/actions/runs/{run_id}" if run_id else None
-            ),
-            "case_log_url": None,
-            "historical_only": True,
-            "current_authority": "NOT_PROVIDED",
+            "test_id": case, "case_status": "INFRA_ERROR",
+            "reason": "CASE_EVIDENCE_REJECTED:" + code,
+            "github_run_id": None, "github_run_url": None, "case_log_url": None,
+            "historical_only": True, "current_authority": "NOT_PROVIDED",
         }
         print(json.dumps(payload, sort_keys=True))
         return 1
 
 
 
+
+def result_exit_code(result):
+    return 0 if result.get("case_status") == "PASS" or result.get("selected") is False else 1
+
+
+def result_main():
+    return display_case_main(os.environ)
+
+
 def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _: None):
     require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
     release(api, intent["control_sha"])
     require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
-    # A completed capture is the retry identity. Never invent a new nonce.
     run_id = find_run(api, intent)
     initial_response_run = False
     if run_id is None:
         require(
-            int(clock()) < intent["deadline"] and int(clock()) - intent["bridge"]["event_created_at"] <= 300,
+            int(clock()) < intent["deadline"]
+            and int(clock()) - intent["bridge"]["event_created_at"] <= 300,
             "CAPTURE_EXPIRED_BEFORE_DISPATCH",
         )
         body = {
@@ -833,7 +1081,11 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
             "inputs": {"source_provider": "gitcode", "gitcode_request": canonical(intent).decode()},
         }
         try:
-            response = api.gh(f"/actions/workflows/{GH_WORKFLOW_ID}/dispatches", body=body, dispatch=True)
+            response = api.gh(
+                f"/actions/workflows/{GH_WORKFLOW_ID}/dispatches",
+                body=body,
+                dispatch=True,
+            )
         except (OSError, TimeoutError, ManualForwardError):
             response = None
         if isinstance(response, dict) and type(response.get("workflow_run_id")) is int:
@@ -852,6 +1104,7 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
                     break
                 sleep(5)
             require(run_id is not None, "DISPATCH_OUTCOME_UNKNOWN_NO_RETRY")
+
     first_bound = (
         bind_initial_run(api, intent, run_id, clock=clock, sleep=sleep, progress=progress)
         if initial_response_run
@@ -863,6 +1116,7 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
         run = first_bound if first_bound is not None else api.gh(f"/actions/runs/{run_id}")
         first_bound = None
         require(run.get("id") == run_id and type(run.get("id")) is int, "GITHUB_RUN_RESPONSE_ID_MISMATCH")
+
         validate_github_run(run, intent)
         if not reported_run:
             progress(
@@ -876,46 +1130,139 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
             )
             reported_run = True
         require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
-        if run.get("status") == "completed":
-            require(run.get("conclusion") == "success", "GITHUB_FORWARD_FAILED")
-            jobs = api.gh(f"/actions/runs/{run_id}/jobs?filter=latest&per_page=100")
-            rows = jobs.get("jobs")
-            require(isinstance(rows, list) and jobs.get("total_count") == len(rows) <= 100, "GITHUB_JOBS_INCOMPLETE")
-            for name in ("prepare-gitcode", "wait-gitcode", "Lite-Actions-GitCode-Smoke"):
-                matches = [job for job in rows if job.get("name") == name]
-                require(
-                    len(matches) == 1
-                    and matches[0].get("status") == "completed"
-                    and matches[0].get("conclusion") == "success"
-                    and matches[0].get("run_id") == run_id
-                    and matches[0].get("run_attempt") == 1,
-                    "GITHUB_FIXED_RESULT_JOB_NOT_PASS",
-                )
-            plan = read_plan_artifact(api, intent, run_id)
-            receipt = read_admission_receipt(api, plan, intent)
-            selected = [row["test_id"] for row in intent["selectors"]]
-            case_results = [
-                case_check(api, intent, plan, receipt, run_id, test_id, run_conclusion=run.get("conclusion"))
-                for test_id in selected
-            ]
+        if run.get("status") != "completed":
+            sleep(min(30, max(0, intent["deadline"] - int(clock()))))
+            continue
+
+        jobs_response = api.gh(f"/actions/runs/{run_id}/jobs?filter=latest&per_page=100")
+        rows = jobs_response.get("jobs") if isinstance(jobs_response, dict) else None
+        require(
+            isinstance(rows, list)
+            and type(jobs_response.get("total_count")) is int
+            and jobs_response["total_count"] == len(rows) <= 100,
+            "GITHUB_JOBS_INCOMPLETE",
+        )
+        observed_jobs = {}
+        for name in ("prepare-gitcode", "wait-gitcode", "Lite-Actions-GitCode-Smoke"):
+            matches = [job for job in rows if job.get("name") == name]
             require(
-                all(item["case_status"] == "PASS" for item in case_results),
-                "SELECTED_CASE_RESULT_SET_NOT_GREEN",
+                len(matches) == 1
+                and matches[0].get("status") == "completed"
+                and matches[0].get("run_id") == run_id
+                and matches[0].get("run_attempt") == 1
+                and matches[0].get("conclusion") in {
+                    "success", "failure", "cancelled", "timed_out", "action_required"
+                },
+                "GITHUB_FIXED_RESULT_JOB_IDENTITY_INVALID",
             )
-            require(snapshot(api, intent["pr"]["number"]) == intent["pr"], "FINAL_PR_STALE")
-            release(api, intent["control_sha"])
-            run_identity(api, intent["bridge"]["bridge_action_run"], intent["control_sha"])
-            require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
-            return {
-                "scope": "PERSONAL_MANUAL_FORWARD_NOT_OFFICIAL_PR_GATE",
-                "github_run_id": run_id,
-                "control_sha": intent["control_sha"],
-                "historical_execution_result": "PASS",
-                "current_authority": "NOT_PROVIDED",
-                "not_current_merge_authorization": True,
-                "merge_gate": "NOT_PROVIDED",
-            }
-        sleep(min(30, max(0, intent["deadline"] - int(clock()))))
+            observed_jobs[name] = matches[0]
+        require(observed_jobs["prepare-gitcode"]["conclusion"] == "success",
+                "GITHUB_PREPARE_JOB_NOT_SUCCESSFUL")
+
+        plan = read_plan_artifact(api, intent, run_id)
+        receipt = read_admission_receipt(api, plan, intent)
+        pr_matches = current_pr_matches(api, intent)
+        control_matches = current_control_matches(api, intent["control_sha"])
+        selected_ids = {row["test_id"] for row in intent["selectors"]}
+        case_results = []
+        for test_id in ALLOWED_CASES:
+            try:
+                if receipt is None and test_id in selected_ids:
+                    case_id = CASE_ORDER[test_id]
+                    check = read_fixed_check(api, plan, case_id)
+                    html = check.get("html_url")
+                    require(
+                        check.get("status") in {"queued", "in_progress"}
+                        and check.get("conclusion") is None
+                        and isinstance(html, str)
+                        and urllib.parse.urlparse(html).hostname == "github.com",
+                        "CASE_NOT_ADMITTED_CHECK_INVALID",
+                    )
+                    result = {
+                        "case_id": case_id, "test_id": test_id,
+                        "case_status": "NOT_RUN",
+                        "reason": "No Admission Receipt was published; no Case execution was authorized",
+                        "github_run_id": run_id,
+                        "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
+                        "case_check_url": html, "case_log_url": html,
+                        "check_id": check["id"], "selected": True,
+                        "check_conclusion": None, "cleanup_verified": None,
+                        "exit_code": None, "current_pr_matches": pr_matches,
+                    }
+                else:
+                    result = case_check(
+                        api, intent, plan, receipt, run_id, test_id,
+                        run_conclusion=run.get("conclusion"),
+                        pr_matches=pr_matches,
+                    )
+            except Exception as error:
+                code = str(error) if isinstance(error, ManualForwardError) else type(error).__name__
+                result = {
+                    "case_id": CASE_ORDER[test_id],
+                    "test_id": test_id,
+                    "case_status": "INFRA_ERROR",
+                    "reason": "CASE_EVIDENCE_READ_FAILED:" + code,
+                    "github_run_id": run_id,
+                    "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
+                    "case_check_url": None,
+                    "case_log_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
+                    "check_id": None,
+                    "selected": test_id in selected_ids,
+                    "check_conclusion": None,
+                    "cleanup_verified": None,
+                    "exit_code": None,
+                    "current_pr_matches": pr_matches,
+                }
+            case_results.append(result)
+
+        final_capture = run_identity(
+            api, intent["bridge"]["bridge_action_run"], intent["control_sha"]
+        )
+        require(
+            final_capture.get("status") == "RUNNING"
+            or (final_capture.get("status") == "COMPLETED" and final_capture.get("conclusion") == "success"),
+            "CAPTURE_RUN_REVOKED_BEFORE_DISPLAY",
+        )
+        require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
+
+        selected_pass = all(
+            result["case_status"] == "PASS"
+            for result in case_results
+            if result["test_id"] in selected_ids
+        )
+        outputs = {}
+        for result in case_results:
+            outputs[CASE_OUTPUTS[result["test_id"]]] = encode_case_evidence(
+                intent, plan, receipt, result, control_matches=control_matches,
+                workflow_conclusion=run.get("conclusion"),
+            )
+        return {
+            "scope": "PERSONAL_MANUAL_FORWARD_NOT_OFFICIAL_PR_GATE",
+            "github_run_id": run_id,
+            "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
+            "control_sha": intent["control_sha"],
+            "case_results": [
+                {
+                    "test_id": result["test_id"],
+                    "case_id": result["case_id"],
+                    "case_status": result["case_status"],
+                    "selected": result["selected"],
+                }
+                for result in case_results
+            ],
+            "selected_cases_pass": selected_pass,
+            "forward_gate": (
+                "success"
+                if selected_pass and run.get("conclusion") == "success"
+                else "failure"
+            ),
+            "workflow_conclusion": run.get("conclusion"),
+            "historical_execution_result": "PASS" if selected_pass else "FAIL",
+            "current_authority": "NOT_PROVIDED",
+            "not_current_merge_authorization": True,
+            "merge_gate": "NOT_PROVIDED",
+            "case_job_outputs": outputs,
+        }
     raise ManualForwardError("MANUAL_DEADLINE_EXCEEDED")
 
 
@@ -925,12 +1272,17 @@ def main():
     try:
         api = API(os.environ)
         intent = retrieve_intent(api, os.environ)
-        print(
-            json.dumps(
-                forward(api, intent, progress=lambda row: print(json.dumps(row, sort_keys=True), flush=True)),
-                sort_keys=True,
-            )
+        result = forward(
+            api,
+            intent,
+            progress=lambda row: print(json.dumps(row, sort_keys=True), flush=True),
         )
+        outputs = result.pop("case_job_outputs")
+        write_case_job_outputs(outputs)
+        result.pop("selected_cases_pass")
+        print(json.dumps(result, sort_keys=True))
+        # This job publishes verified evidence. Case outcomes and the global
+        # workflow conclusion are enforced by downstream read-only jobs.
         return 0
     except Exception as error:
         return emit_failure(error)

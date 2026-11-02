@@ -97,7 +97,7 @@ class API:
         self.github_token = environment.get("LITE_ACTIONS_GITHUB_TOKEN", "")
         self.opener = urllib.request.build_opener(NoRedirect())
 
-    def request(self, service, path, *, body=None, dispatch=False):
+    def request(self, service, path, *, body=None, dispatch=False, authenticated_read=False):
         require(
             path.startswith("/")
             and not path.startswith("//")
@@ -138,14 +138,33 @@ class API:
             )
             origin = "https://api.github.com"
             headers["X-GitHub-Api-Version"] = "2022-11-28"
-            if dispatch:
+            require(not (dispatch and authenticated_read), "GITHUB_AUTH_MODE_CONFLICT")
+            if authenticated_read:
+                require(body is None, "GITHUB_READ_CLIENT_CANNOT_WRITE")
+                artifact_prefix = "/repos/" + GH_REPO + "/actions/runs/"
+                artifact_suffix = "/artifacts?name=lite-ci-request-1&per_page=10&page=1"
+                artifact_route = False
+                if path.startswith(artifact_prefix) and path.endswith(artifact_suffix):
+                    run_text = path[len(artifact_prefix):-len(artifact_suffix)]
+                    artifact_route = run_text.isascii() and run_text.isdigit() and int(run_text) > 0
+                allowed = artifact_route or bool(re.fullmatch(
+                    r"/repos/" + re.escape(GH_REPO) + r"/(?:actions/artifacts/[0-9]+|check-runs/[0-9]+)",
+                    path,
+                ))
+                require(allowed, "GITHUB_AUTHENTICATED_READ_ROUTE_NOT_ALLOWED")
+                require(
+                    self.github_token and not any(ord(c) < 32 for c in self.github_token),
+                    "GITHUB_ACTIONS_READ_TOKEN_REQUIRED",
+                )
+                headers["Authorization"] = "Bearer " + self.github_token
+            elif dispatch:
                 require(
                     path == "/repos/" + GH_REPO + f"/actions/workflows/{GH_WORKFLOW_ID}/dispatches"
                     and body is not None,
                     "ONLY_FIXED_DISPATCH_ALLOWED",
                 )
                 require(
-                    self.github_token and "\n" not in self.github_token and "\r" not in self.github_token,
+                    self.github_token and not any(ord(c) < 32 for c in self.github_token),
                     "GITHUB_DISPATCH_TOKEN_REQUIRED",
                 )
                 headers["Authorization"] = "Bearer " + self.github_token
@@ -170,11 +189,21 @@ class API:
             return None
         return json.loads(raw)
 
-    def download_public_artifact(self, artifact_id):
+    def download_authenticated_artifact(self, artifact_id):
+        require(type(artifact_id) is int and artifact_id > 0, "INVALID_ARTIFACT_ID")
         path = f"/repos/{GH_REPO}/actions/artifacts/{artifact_id}/zip"
+        require(
+            self.github_token and not any(ord(c) < 32 for c in self.github_token),
+            "GITHUB_ACTIONS_READ_TOKEN_REQUIRED",
+        )
         request = urllib.request.Request(
             "https://api.github.com" + path,
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "lite-gitcode-manual-readonly"},
+            headers={
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Authorization": "Bearer " + self.github_token,
+                "User-Agent": "lite-gitcode-manual-control-v1",
+            },
             method="GET",
         )
         try:
@@ -185,31 +214,43 @@ class API:
                 raise ManualForwardError("API_GITHUB_PLAN_ARTIFACT_HTTP_" + str(error.code)) from None
             location = error.headers.get("Location", "")
             parsed = urllib.parse.urlparse(location)
+            host = parsed.hostname or ""
+            trusted_host = (
+                host.endswith(".blob.core.windows.net")
+                or host in {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
+            )
             require(
-                parsed.scheme == "https"
-                and parsed.hostname is not None
-                and parsed.hostname.endswith(".blob.core.windows.net")
-                and not parsed.username
-                and not parsed.password,
+                parsed.scheme == "https" and trusted_host
+                and parsed.port in (None, 443)
+                and not parsed.username and not parsed.password and bool(parsed.query),
                 "GITHUB_PLAN_ARTIFACT_REDIRECT_UNTRUSTED",
             )
-            request = urllib.request.Request(location, headers={"User-Agent": "lite-gitcode-manual-readonly"})
+            # Signed redirect stays in memory and is never logged.
+            blob_request = urllib.request.Request(
+                location, headers={"User-Agent": "lite-gitcode-manual-control-v1"}, method="GET"
+            )
             try:
-                with self.opener.open(request, timeout=20) as response:
+                with self.opener.open(blob_request, timeout=20) as response:
                     payload = response.read(1024 * 1024 + 1)
             except Exception:
                 raise ManualForwardError("GITHUB_PLAN_ARTIFACT_BLOB_READ_FAILED") from None
         except Exception:
             raise ManualForwardError("GITHUB_PLAN_ARTIFACT_DOWNLOAD_FAILED") from None
-        require(isinstance(payload, bytes) and 0 < len(payload) <= 1024 * 1024, "GITHUB_PLAN_ARTIFACT_SIZE_INVALID")
+        require(
+            isinstance(payload, bytes) and 0 < len(payload) <= 1024 * 1024,
+            "GITHUB_PLAN_ARTIFACT_SIZE_INVALID",
+        )
         return payload
 
     def gc(self, suffix="", *, version=5, body=None):
         require(version in (5, 8), "UNSUPPORTED_API_VERSION")
         return self.request("gitcode", f"/api/v{version}/repos/" + GC_REPO + suffix, body=body)
 
-    def gh(self, suffix, *, body=None, dispatch=False):
-        return self.request("github", "/repos/" + GH_REPO + suffix, body=body, dispatch=dispatch)
+    def gh(self, suffix, *, body=None, dispatch=False, authenticated_read=False):
+        return self.request(
+            "github", "/repos/" + GH_REPO + suffix,
+            body=body, dispatch=dispatch, authenticated_read=authenticated_read,
+        )
 
 
 def context(environment):
