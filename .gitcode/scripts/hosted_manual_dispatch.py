@@ -764,6 +764,18 @@ def case_check(api, intent, plan, receipt, run_id, test_id, *, run_conclusion="f
 
 
 
+FORWARD_GATE_REASONS = {
+    "OK",
+    "SELECTED_CASE_FAILED",
+    "GITHUB_RUN_NOT_SUCCESS",
+    "PR_AUTHORITY_MISMATCH",
+    "PR_AUTHORITY_UNAVAILABLE",
+    "CONTROL_AUTHORITY_MISMATCH",
+    "CONTROL_AUTHORITY_UNAVAILABLE",
+    "CAPTURE_REVOKED",
+}
+
+
 CASE_OUTPUTS = {
     "worker_os_blue": "case_os_result",
     "dispatch_smoke_8p": "case_8p_result",
@@ -832,9 +844,14 @@ def encode_case_evidence(intent, plan, receipt, result, *, control_matches, work
 def write_case_job_outputs(outputs, *, output_path=None):
     path = output_path or os.environ.get("ATOMGIT_OUTPUT")
     require(isinstance(path, str) and path and len(path) <= 4096, "ATOMGIT_OUTPUT_REQUIRED")
-    require(set(outputs) == set(CASE_OUTPUTS.values()), "CASE_OUTPUT_SET_INVALID")
+    require(
+        set(outputs) == set(CASE_OUTPUTS.values()) | {"forward_gate", "forward_gate_reason"}
+        and outputs["forward_gate"] in {"success", "failure"}
+        and outputs["forward_gate_reason"] in FORWARD_GATE_REASONS,
+        "CASE_OUTPUT_SET_INVALID",
+    )
     rows = []
-    for key in CASE_OUTPUTS.values():
+    for key in (*CASE_OUTPUTS.values(), "forward_gate", "forward_gate_reason"):
         value = outputs[key]
         require(isinstance(value, str) and len(value) <= 32 * 1024, "CASE_OUTPUT_VALUE_INVALID")
         require(re.fullmatch(r"[A-Za-z0-9_-]+", value), "CASE_OUTPUT_ENCODING_INVALID")
@@ -1007,8 +1024,6 @@ def display_case_main(environment):
     try:
         body = decode_case_evidence(environment)
         reason = body["reason"]
-        if body["workflow_conclusion"] != "success":
-            reason += "; overall GitHub forward run concluded " + body["workflow_conclusion"] + "; aggregate is not green"
         payload = {
             "test_id": body["test_id"],
             "case_id": body["case_id"],
@@ -1038,8 +1053,6 @@ def display_case_main(environment):
             "current_control_matches": body["observation"]["current_control_matches"],
         }
         print(json.dumps(payload, sort_keys=True))
-        if body["workflow_conclusion"] != "success":
-            return 1
         return result_exit_code({"case_status": body["case_status"], "selected": body["selected"]})
     except Exception as error:
         code = str(error) if isinstance(error, ManualForwardError) else type(error).__name__
@@ -1070,6 +1083,14 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
     run_id = find_run(api, intent)
     initial_response_run = False
     if run_id is None:
+        capture_before_dispatch = run_identity(
+            api, intent["bridge"]["bridge_action_run"], intent["control_sha"]
+        )
+        require(
+            capture_before_dispatch.get("status") == "RUNNING"
+            or (capture_before_dispatch.get("status") == "COMPLETED" and capture_before_dispatch.get("conclusion") == "success"),
+            "CAPTURE_RUN_CANCELLED_OR_FAILED",
+        )
         require(
             int(clock()) < intent["deadline"]
             and int(clock()) - intent["bridge"]["event_created_at"] <= 300,
@@ -1111,8 +1132,19 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
         else None
     )
     reported_run = False
+    capture_revoked = False
     while int(clock()) < intent["deadline"]:
-        run_identity(api, intent["bridge"]["bridge_action_run"], intent["control_sha"])
+        try:
+            capture_observation = run_identity(
+                api, intent["bridge"]["bridge_action_run"], intent["control_sha"]
+            )
+            if not (
+                capture_observation.get("status") == "RUNNING"
+                or (capture_observation.get("status") == "COMPLETED" and capture_observation.get("conclusion") == "success")
+            ):
+                capture_revoked = True
+        except Exception:
+            capture_revoked = True
         run = first_bound if first_bound is not None else api.gh(f"/actions/runs/{run_id}")
         first_bound = None
         require(run.get("id") == run_id and type(run.get("id")) is int, "GITHUB_RUN_RESPONSE_ID_MISMATCH")
@@ -1161,8 +1193,21 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
 
         plan = read_plan_artifact(api, intent, run_id)
         receipt = read_admission_receipt(api, plan, intent)
-        pr_matches = current_pr_matches(api, intent)
-        control_matches = current_control_matches(api, intent["control_sha"])
+        authority_reasons = ["CAPTURE_REVOKED"] if capture_revoked else []
+        try:
+            pr_matches = current_pr_matches(api, intent)
+            if not pr_matches:
+                authority_reasons.append("PR_AUTHORITY_MISMATCH")
+        except Exception:
+            pr_matches = False
+            authority_reasons.append("PR_AUTHORITY_UNAVAILABLE")
+        try:
+            control_matches = current_control_matches(api, intent["control_sha"])
+            if not control_matches:
+                authority_reasons.append("CONTROL_AUTHORITY_MISMATCH")
+        except Exception:
+            control_matches = False
+            authority_reasons.append("CONTROL_AUTHORITY_UNAVAILABLE")
         selected_ids = {row["test_id"] for row in intent["selectors"]}
         case_results = []
         for test_id in ALLOWED_CASES:
@@ -1215,14 +1260,18 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
                 }
             case_results.append(result)
 
-        final_capture = run_identity(
-            api, intent["bridge"]["bridge_action_run"], intent["control_sha"]
-        )
-        require(
-            final_capture.get("status") == "RUNNING"
-            or (final_capture.get("status") == "COMPLETED" and final_capture.get("conclusion") == "success"),
-            "CAPTURE_RUN_REVOKED_BEFORE_DISPLAY",
-        )
+        try:
+            final_capture = run_identity(
+                api, intent["bridge"]["bridge_action_run"], intent["control_sha"]
+            )
+            capture_authority_ok = (
+                final_capture.get("status") == "RUNNING"
+                or (final_capture.get("status") == "COMPLETED" and final_capture.get("conclusion") == "success")
+            )
+        except Exception:
+            capture_authority_ok = False
+        if not capture_authority_ok and "CAPTURE_REVOKED" not in authority_reasons:
+            authority_reasons.append("CAPTURE_REVOKED")
         require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
 
         selected_pass = all(
@@ -1236,6 +1285,14 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
                 intent, plan, receipt, result, control_matches=control_matches,
                 workflow_conclusion=run.get("conclusion"),
             )
+        gate_reasons = list(authority_reasons)
+        if run.get("conclusion") != "success":
+            gate_reasons.append("GITHUB_RUN_NOT_SUCCESS")
+        if not selected_pass:
+            gate_reasons.append("SELECTED_CASE_FAILED")
+        gate_reason = gate_reasons[0] if gate_reasons else "OK"
+        outputs["forward_gate"] = "success" if not gate_reasons else "failure"
+        outputs["forward_gate_reason"] = gate_reason
         return {
             "scope": "PERSONAL_MANUAL_FORWARD_NOT_OFFICIAL_PR_GATE",
             "github_run_id": run_id,
@@ -1243,19 +1300,18 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
             "control_sha": intent["control_sha"],
             "case_results": [
                 {
-                    "test_id": result["test_id"],
-                    "case_id": result["case_id"],
-                    "case_status": result["case_status"],
-                    "selected": result["selected"],
+                    key: result.get(key)
+                    for key in (
+                        "test_id", "case_id", "case_status", "selected", "reason",
+                        "check_id", "check_conclusion", "cleanup_verified", "exit_code",
+                        "case_check_url", "case_log_url", "current_pr_matches",
+                    )
                 }
                 for result in case_results
             ],
             "selected_cases_pass": selected_pass,
-            "forward_gate": (
-                "success"
-                if selected_pass and run.get("conclusion") == "success"
-                else "failure"
-            ),
+            "forward_gate": outputs["forward_gate"],
+            "forward_gate_reason": gate_reason,
             "workflow_conclusion": run.get("conclusion"),
             "historical_execution_result": "PASS" if selected_pass else "FAIL",
             "current_authority": "NOT_PROVIDED",

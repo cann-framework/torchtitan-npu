@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import tempfile
+import os
+import subprocess
 import urllib.error
 import zipfile
 import sys
@@ -175,6 +177,8 @@ class FakeAPI:
         self.artifact_metadata = None
         self.case_checks = []
         self.fail_cases = set()
+        self.not_run_cases = set()
+        self.github_run_conclusion = "success"
         self.completed_jobs = [
             {"id": 31 if name == "prepare-gitcode" else 32, "name": name, "status": "completed", "conclusion": "success", "run_id": 42, "run_attempt": 1}
             for name in ("prepare-gitcode", "wait-gitcode", "Lite-Actions-GitCode-Smoke")
@@ -248,6 +252,9 @@ class FakeAPI:
                         envelope, sort_keys=True, separators=(",", ":")
                     )
                     check["conclusion"] = "failure"
+                if any(case_id in check.get("name", "") for case_id in self.not_run_cases):
+                    check["status"] = "in_progress"
+                    check["conclusion"] = None
             if not self.drop_dispatch:
                 self.gh_run = {
                     "id": 42,
@@ -261,7 +268,7 @@ class FakeAPI:
                     "actor": {"login": common.ALLOWED_ACTOR},
                     "path": common.GH_WORKFLOW,
                     "status": "completed",
-                    "conclusion": "success",
+                    "conclusion": self.github_run_conclusion,
                 }
             if self.lose_response:
                 raise TimeoutError()
@@ -313,6 +320,7 @@ class HostedManualTests(unittest.TestCase):
             "ACTOR": "depeng1994",
             "CONTROL_SHA": S,
             "PR_NUMBER": "2",
+            "TEST_CASE": "os_8p_16p",
         }
         self.now = 1000
         self.patch = patch.object(dispatch, "CAPTURE_SCRIPT_SHA256", builder.scripts()[2])
@@ -325,6 +333,24 @@ class HostedManualTests(unittest.TestCase):
         )
         return dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
 
+    def render_case(self, intent, plan, receipt, result, workflow_conclusion):
+        encoded = dispatch.encode_case_evidence(
+            intent, plan, receipt, result, control_matches=result.get("current_control_matches", True),
+            workflow_conclusion=workflow_conclusion,
+        )
+        environment = {
+            "RESULT_CASE": result["test_id"],
+            "CASE_EVIDENCE": encoded,
+            "CAPTURE_RUN_ID": intent["bridge"]["bridge_action_run"],
+            "CAPTURE_ATTEMPT": "1",
+            "CONTROL_SHA": intent["control_sha"],
+            "CAPTURE_RESULT": "success",
+        }
+        with patch("sys.stdout", io.StringIO()) as output:
+            exit_code = dispatch.display_case_main(environment)
+            payload = json.loads(output.getvalue())
+        return exit_code, payload
+
     def test_generated_workflow_uses_forward_job_outputs_without_result_job_tokens(self):
         content, digest = builder.render()
         self.assertEqual(builder.OUTPUT.read_text(), content)
@@ -335,9 +361,25 @@ class HostedManualTests(unittest.TestCase):
         jobs = doc["stages"]["manual"]["jobs"]
         self.assertEqual(
             set(jobs),
-            {"manual_capture", "manual_forward", "case_os_result", "case_8p_result", "case_16p_result"},
+            {"manual_capture", "manual_forward", "case_os_result", "case_8p_result", "case_16p_result", "aggregate_gate"},
         )
         self.assertEqual(jobs["manual_forward"]["needs"], ["manual_capture"])
+        self.assertEqual(
+            set(jobs["manual_forward"]["outputs"]),
+            {"case_os_result", "case_8p_result", "case_16p_result", "forward_gate", "forward_gate_reason"},
+        )
+        self.assertEqual(
+            jobs["aggregate_gate"]["needs"],
+            ["manual_capture", "manual_forward", "case_os_result", "case_8p_result", "case_16p_result"],
+        )
+        self.assertEqual(
+            doc["on"]["workflow_dispatch"]["inputs"]["test_case"]["default"],
+            "worker_os_blue",
+        )
+        self.assertEqual(
+            doc["on"]["workflow_dispatch"]["inputs"]["test_case"]["options"],
+            ["worker_os_blue", "os_8p_16p"],
+        )
         self.assertEqual(len(jobs["manual_capture"]["steps"]), 1)
         self.assertEqual(jobs["case_os_result"]["needs"], ["manual_capture", "manual_forward"])
         self.assertEqual(jobs["case_8p_result"]["needs"], ["manual_capture", "manual_forward"])
@@ -353,8 +395,13 @@ class HostedManualTests(unittest.TestCase):
                 self.assertNotIn("ATOMGIT_TOKEN", step["env"])
                 self.assertIn("CASE_EVIDENCE", step["env"])
                 self.assertIn("needs.manual_forward.outputs.", step["env"]["CASE_EVIDENCE"])
-            self.assertIn("python3 -I -B", step["run"])
-            self.assertNotIn("from hosted_manual_common", step["run"])
+            if name != "aggregate_gate":
+                self.assertIn("python3 -I -B", step["run"])
+                self.assertNotIn("from hosted_manual_common", step["run"])
+            else:
+                self.assertNotIn("LITE_ACTIONS_GITHUB_TOKEN", step["env"])
+                self.assertNotIn("ATOMGIT_TOKEN", step["env"])
+                self.assertIn("FORWARD_GATE_REASON", step["env"])
         self.assertEqual(hashlib.sha256(jobs["manual_capture"]["steps"][0]["run"].encode()).hexdigest(), digest)
         capture_script, forward_script, _ = builder.scripts()
         self.assertEqual(jobs["manual_capture"]["steps"][0]["run"], capture_script)
@@ -405,9 +452,28 @@ class HostedManualTests(unittest.TestCase):
             ("REPOSITORY", "cann/torchtitan-npu"),
             ("ACTOR", "other"),
             ("PR_NUMBER", "2;echo leak"),
+            ("TEST_CASE", "dispatch_smoke_8p"),
         ):
             with self.subTest(field=field, value=value), self.assertRaises(common.ManualForwardError):
                 capture.capture({**self.env, field: value}, self.api)
+
+    def test_default_test_case_preserves_current_os_only_route(self):
+        environment = dict(self.env)
+        environment.pop("TEST_CASE")
+        raw = capture.capture(
+            environment, self.api, clock=lambda: self.now,
+            nonce_factory=lambda: "n" * 32,
+        )
+        payload = __import__("base64").b64decode(raw.rsplit(" ", 1)[1])
+        intent = json.loads(payload)["intent"]
+        self.assertEqual(intent["selectors"], [{"test_id": "worker_os_blue"}])
+        self.assertEqual(
+            capture.capture(
+                {**self.env, "TEST_CASE": "worker_os_blue"},
+                self.api, clock=lambda: self.now, nonce_factory=lambda: "n" * 32,
+            ).split(" ", 1)[1],
+            raw.split(" ", 1)[1],
+        )
 
     def test_capture_is_one_exact_three_case_intent(self):
         intent = self.emit()
@@ -831,7 +897,10 @@ class HostedManualTests(unittest.TestCase):
             next(row for row in result["case_results"] if row["test_id"] == "dispatch_smoke_16p")["case_status"],
             "FAIL",
         )
-        self.assertEqual(set(result["case_job_outputs"]), set(dispatch.CASE_OUTPUTS.values()))
+        self.assertEqual(
+            set(result["case_job_outputs"]),
+            set(dispatch.CASE_OUTPUTS.values()) | {"forward_gate", "forward_gate_reason"},
+        )
         self.assertEqual(
             events,
             [
@@ -1158,15 +1227,188 @@ class HostedManualTests(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile() as output:
             dispatch.write_case_job_outputs(
-                {name: encoded for name in dispatch.CASE_OUTPUTS.values()},
+                {
+                    **{name: encoded for name in dispatch.CASE_OUTPUTS.values()},
+                    "forward_gate": "success",
+                    "forward_gate_reason": "OK",
+                },
                 output_path=output.name,
             )
             output.seek(0)
             rows = output.read().decode().splitlines()
         self.assertEqual([row.split("=", 1)[0] for row in rows], [
-            "case_os_result", "case_8p_result", "case_16p_result"
+            "case_os_result", "case_8p_result", "case_16p_result",
+            "forward_gate", "forward_gate_reason",
         ])
         self.assertTrue(all(len(row.split("=", 1)[1]) <= 32 * 1024 for row in rows))
+
+    def test_case_matrix_os_pass_8p_fail_16p_not_run_keeps_independent_statuses(self):
+        intent = self.emit()
+        self.api.fail_cases.add(dispatch.CASE_ORDER["dispatch_smoke_8p"])
+        self.api.not_run_cases.add(dispatch.CASE_ORDER["dispatch_smoke_16p"])
+        self.api.github_run_conclusion = "failure"
+        result = dispatch.forward(self.api, intent, clock=lambda: self.now)
+        statuses = {row["test_id"]: row["case_status"] for row in result["case_results"]}
+        self.assertEqual(statuses, {
+            "worker_os_blue": "PASS",
+            "dispatch_smoke_8p": "FAIL",
+            "dispatch_smoke_16p": "NOT_RUN",
+        })
+        self.assertEqual(result["forward_gate"], "failure")
+        self.assertEqual(result["forward_gate_reason"], "GITHUB_RUN_NOT_SUCCESS")
+        plan = self.api.plan
+        receipt = self.api.receipt
+        by_test = {row["test_id"]: row for row in result["case_results"]}
+        exits = {}
+        for test_id in dispatch.ALLOWED_CASES:
+            exit_code, payload = self.render_case(
+                intent, plan, receipt, by_test[test_id], "failure"
+            )
+            exits[test_id] = exit_code
+            self.assertEqual(payload["case_status"], statuses[test_id])
+            self.assertTrue(payload["historical_only"])
+            self.assertEqual(payload["current_authority"], "NOT_PROVIDED")
+        self.assertEqual(exits, {
+            "worker_os_blue": 0,
+            "dispatch_smoke_8p": 1,
+            "dispatch_smoke_16p": 1,
+        })
+
+    def test_three_case_pass_with_authority_failure_keeps_cases_green_and_aggregate_red(self):
+        intent = self.emit()
+        with patch.object(dispatch, "current_pr_matches", return_value=False):
+            result = dispatch.forward(self.api, intent, clock=lambda: self.now)
+        self.assertEqual([row["case_status"] for row in result["case_results"]], ["PASS", "PASS", "PASS"])
+        self.assertEqual(result["forward_gate"], "failure")
+        self.assertEqual(result["forward_gate_reason"], "PR_AUTHORITY_MISMATCH")
+        for row in result["case_results"]:
+            exit_code, payload = self.render_case(
+                intent, self.api.plan, self.api.receipt, row, "success"
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["case_status"], "PASS")
+            self.assertTrue(payload["historical_only"])
+            self.assertFalse(payload["current_pr_matches"])
+
+    def test_three_case_pass_with_github_total_failure_keeps_case_jobs_green(self):
+        intent = self.emit()
+        self.api.github_run_conclusion = "failure"
+        result = dispatch.forward(self.api, intent, clock=lambda: self.now)
+        self.assertEqual([row["case_status"] for row in result["case_results"]], ["PASS", "PASS", "PASS"])
+        self.assertEqual(result["forward_gate"], "failure")
+        self.assertEqual(result["forward_gate_reason"], "GITHUB_RUN_NOT_SUCCESS")
+        for row in result["case_results"]:
+            exit_code, payload = self.render_case(
+                intent, self.api.plan, self.api.receipt, row, "failure"
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["case_status"], "PASS")
+
+    def test_legacy_os_only_selector_marks_8p_16p_not_run_without_failing_them(self):
+        self.env["TEST_CASE"] = "worker_os_blue"
+        intent = self.emit()
+        result = dispatch.forward(self.api, intent, clock=lambda: self.now)
+        self.assertEqual(
+            [row["case_status"] for row in result["case_results"]],
+            ["PASS", "NOT_RUN", "NOT_RUN"],
+        )
+        self.assertEqual(
+            [row["selected"] for row in result["case_results"]],
+            [True, False, False],
+        )
+        self.assertEqual(result["forward_gate"], "success")
+        for row in result["case_results"]:
+            exit_code, payload = self.render_case(
+                intent, self.api.plan, self.api.receipt, row, "success"
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["case_status"], row["case_status"])
+
+    def test_missing_or_identity_mismatched_case_output_fails_with_fixed_reason(self):
+        missing = {
+            "RESULT_CASE": "worker_os_blue",
+            "CAPTURE_RESULT": "success",
+        }
+        with patch("sys.stdout", io.StringIO()) as output:
+            self.assertEqual(dispatch.display_case_main(missing), 1)
+            payload = json.loads(output.getvalue())
+        self.assertEqual(payload["case_status"], "INFRA_ERROR")
+        self.assertIn("CASE_EVIDENCE_MISSING_OR_OVERSIZED", payload["reason"])
+
+        intent = self.emit()
+        plan, receipt = fake_plan_and_receipt(intent)
+        self.api.case_checks = [
+            fake_check(plan, receipt, case_id, slot["id"])
+            for case_id, slot in plan["result_slots"].items()
+        ]
+        result = dispatch.case_check(
+            self.api, intent, plan, receipt, 42, "worker_os_blue", pr_matches=True
+        )
+        encoded = dispatch.encode_case_evidence(
+            intent, plan, receipt, result, control_matches=True,
+            workflow_conclusion="success",
+        )
+        wrong = {
+            "RESULT_CASE": "worker_os_blue",
+            "CASE_EVIDENCE": encoded,
+            "CAPTURE_RUN_ID": "wrong-capture-run",
+            "CAPTURE_ATTEMPT": "1",
+            "CONTROL_SHA": intent["control_sha"],
+            "CAPTURE_RESULT": "success",
+        }
+        with patch("sys.stdout", io.StringIO()) as output:
+            self.assertEqual(dispatch.display_case_main(wrong), 1)
+            payload = json.loads(output.getvalue())
+        self.assertEqual(payload["case_status"], "INFRA_ERROR")
+        self.assertIn("CASE_EVIDENCE_REJECTED:CASE_EVIDENCE_IDENTITY_INVALID", payload["reason"])
+
+    def test_aggregate_gate_fails_for_forward_exception_or_missing_gate_output(self):
+        content, _ = builder.render()
+        doc = yaml.load(content, Loader=yaml.BaseLoader)
+        script = doc["stages"]["manual"]["jobs"]["aggregate_gate"]["steps"][0]["run"]
+        environment = dict(os.environ)
+        environment.update({
+            "CAPTURE_RESULT": "success",
+            "FORWARD_RESULT": "failure",
+            "FORWARD_GATE": "",
+            "FORWARD_GATE_REASON": "",
+            "OS_RESULT": "success",
+            "EIGHT_P_RESULT": "success",
+            "SIXTEEN_P_RESULT": "success",
+        })
+        failed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("FORWARD_FAILED_OR_MISSING_OUTPUT", failed.stdout)
+
+        environment["FORWARD_RESULT"] = "success"
+        environment["FORWARD_GATE"] = ""
+        failed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("FORWARD_GATE_MISSING_OR_INVALID", failed.stdout)
+
+        environment["FORWARD_GATE"] = "success"
+        environment["FORWARD_GATE_REASON"] = "PR_AUTHORITY_MISMATCH"
+        failed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("FORWARD_GATE_REASON_MISMATCH", failed.stdout)
+
+        environment["FORWARD_GATE"] = "failure"
+        environment["FORWARD_GATE_REASON"] = "PR_AUTHORITY_MISMATCH"
+        failed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("PR_AUTHORITY_MISMATCH", failed.stdout)
+
+        environment["FORWARD_GATE_REASON"] = "UNTRUSTED_REASON"
+        failed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("FORWARD_GATE_REASON_INVALID", failed.stdout)
+
+        environment["FORWARD_GATE"] = "success"
+        environment["FORWARD_GATE_REASON"] = "OK"
+        environment["EIGHT_P_RESULT"] = "failure"
+        failed = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("8P_CASE_DISPLAY_FAILED", failed.stdout)
 
     def test_selected_case_check_read_error_keeps_verified_run_link_in_bounded_evidence(self):
         intent = self.emit()
