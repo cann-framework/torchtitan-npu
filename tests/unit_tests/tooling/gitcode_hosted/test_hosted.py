@@ -165,6 +165,39 @@ class HostedTests(unittest.TestCase):
         )
         self.assertEqual(self.now, 130)
 
+    def test_wait_timing_logs_fixed_safe_schema_and_uses_monotonic_clock(self):
+        loaded = Mock(verified=object())
+        reader = Mock(policy=self.policy)
+        reader.load.side_effect = [None, loaded]
+        waiter = Mock(plan={"deadline": 200})
+        waiter.poll.side_effect = [
+            {"test_result": "PENDING"},
+            {"test_result": "PASS"},
+        ]
+        args = self.wait_args(reader)
+        args["timeout_seconds"] = 45
+        ticks = iter(i * 0.005 for i in range(100))
+        args["monotonic"] = lambda: next(ticks)
+        with (
+            patch.object(hosted, "GitCodeWaiter", return_value=waiter),
+            self.assertLogs(hosted.__name__, level="INFO") as captured,
+        ):
+            result = hosted.wait(**args)
+        self.assertEqual(result["test_result"], "PASS")
+        rows = [row for row in captured.output if row.startswith("INFO:")]
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(
+            [row.split("stage=", 1)[1].split()[0] for row in rows],
+            ["reader.load", "sleep", "reader.load", "waiter.poll", "sleep", "waiter.poll"],
+        )
+        for row in rows:
+            self.assertRegex(
+                row,
+                r"hosted_wait_timing stage=(reader\.load|waiter\.poll|sleep) elapsed_ms=\d+ run_id=900 sequence=\d+$",
+            )
+            self.assertNotRegex(row, r"https?://|[?&](token|signature)=|secret|response|Authorization")
+        self.assertEqual(args["poll_seconds"], 15)
+
     def test_wait_timeout_never_infers_success_from_absent_artifact(self):
         reader = Mock(policy=self.policy)
         reader.load.return_value = None
@@ -212,7 +245,8 @@ class HostedTests(unittest.TestCase):
             package.mkdir(parents=True)
             (package / "package.json").write_text('{"type":"module","exports":"./index.js"}')
             (package / "index.js").write_text(
-                "import fs from 'node:fs'; export class DefaultArtifactClient { async uploadArtifact(name,files,root,options) {"
+                "import fs from 'node:fs'; export class DefaultArtifactClient { "
+                "async uploadArtifact(name,files,root,options) {"
                 "fs.writeFileSync(process.env.CAPTURE,JSON.stringify({name,files,root,options}));"
                 "console.log('sdk progress'); return {id: 91}; }}"
             )

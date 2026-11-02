@@ -7,9 +7,11 @@ resolve these from dispatch input or from the proposed source bundle.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from ci_core.gitcode_contract import MODEL_REPOSITORIES
@@ -120,6 +122,7 @@ def wait(
     timeout_seconds,
     poll_seconds=15,
     resolve_canonical=None,
+    monotonic=time.monotonic,
 ):
     """Only verified artifacts/fixed Check IDs determine the terminal outcome.
 
@@ -136,12 +139,35 @@ def wait(
         raise HostedError("INVALID_WAITER_BUDGET")
     expires = int(clock()) + timeout_seconds
     waiter = None
+    poll_sequence = 0
+    timing_logger = logging.getLogger(__name__)
+
+    def timed(stage, sequence, operation):
+        started = monotonic()
+        try:
+            return operation()
+        finally:
+            elapsed_ms = max(0, round((monotonic() - started) * 1000))
+            # Fixed stage labels and numeric run/sequence IDs only. Never log
+            # responses, exceptions, request data, environment, or artifact URLs.
+            timing_logger.info(
+                "hosted_wait_timing stage=%s elapsed_ms=%d run_id=%d sequence=%d",
+                stage,
+                elapsed_ms,
+                run_id,
+                sequence,
+            )
+
     while True:
         now = int(clock())
         if now >= expires:
             raise HostedError("HOSTED_WAITER_TIMEOUT")
         if waiter is None:
-            loaded = reader.load(run_id, Path(workspace), now=now)
+            loaded = timed(
+                "reader.load",
+                poll_sequence,
+                lambda now=now: reader.load(run_id, Path(workspace), now=now),
+            )
             if loaded is not None:
                 loaded.verify_files()
                 waiter = GitCodeWaiter(
@@ -155,11 +181,18 @@ def wait(
             now = int(clock())
             if now >= expires:
                 raise HostedError("HOSTED_WAITER_TIMEOUT")
-            outcome = waiter.poll(now=now)
+            poll_sequence += 1
+            outcome = timed(
+                "waiter.poll", poll_sequence, lambda waiter=waiter, now=now: waiter.poll(now=now)
+            )
             if int(clock()) >= expires:
                 raise HostedError("HOSTED_WAITER_TIMEOUT")
             if outcome["test_result"] != "PENDING":
                 return outcome
         remaining = expires - int(clock())
         if remaining > 0:
-            sleep(min(poll_seconds, remaining))
+            timed(
+                "sleep",
+                poll_sequence,
+                lambda remaining=remaining: sleep(min(poll_seconds, remaining)),
+            )
