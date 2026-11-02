@@ -97,16 +97,25 @@ GitCode v8 的日志时间戳只允许按已实测格式剥离一次；任意前
 
 ### 修改与 CPU 验证
 
-从仓库根目录重新生成受审脚本和 workflow：
+通用 manual capture、forward/receipt 校验、三 case 展示和 aggregate gate 已归入
+Lite Actions SDK 的 `ci_core.gitcode_manual`。模型仓只保留六个 Job 配置和一个约 4 KB
+的固定 SDK bootstrap。Bootstrap 通过完整 SDK commit SHA 下载公开源码归档，校验归档
+SHA-256，仅提取 `ci_core/`，并检查归档路径、文件类型及解压大小；不使用 PAT 下载 SDK，
+不引入服务或新授权协议。
+
+从仓库根目录重新生成受审 workflow：
 
 ```bash
 python3 -B .gitcode/scripts/build_hosted_manual_workflow.py
 ```
 
-生成器输出 `capture_script_sha256`，必须与 Worker 可信配置一致。生成文件不得绕过
-源脚本手工修改。`tests/unit_tests/tooling/gitcode_hosted/test_hosted_manual.py`
-使用合成 API 覆盖脚本/日志绑定、真实 SDK 编码契约、权限边界、单次派发恢复、超时及
-历史结果语义；不代表真实平台、NPU 或完整产品 UT。无需导入 torch 或初始化 NPU。
+生成器输出 `capture_script_sha256`，必须与 Worker 可信配置的
+`manual_capture.script_sha256` 一致。SDK SHA 和 archive SHA 必须固定为完整值；禁止
+`latest`、分支名或未校验的动态下载。`tests/unit_tests/tooling/gitcode_hosted/test_manual_sdk_bootstrap.py`
+覆盖六 Job、凭据隔离、OS-only 默认、显式三 case、bootstrap 体积和真实隔离 subprocess
+下载/校验/执行 SDK aggregate。SDK 仓的 `tests/test_gitcode_manual_forward.py` 保留原
+capture/dispatch/receipt/canonical/generation/nonce/cleanup/aggregate 安全回归；不代表
+真实 NPU 或完整产品 UT。
 
 ### 流水线读取权限与失败定位
 
