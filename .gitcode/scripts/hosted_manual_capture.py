@@ -26,8 +26,10 @@ from hosted_manual_common import (
 
 def capture(environment, api, *, clock=time.time, nonce_factory=lambda: secrets.token_hex(24)):
     run_id, control = context(environment)
-    case = environment.get("TEST_CASE")
-    require(case in ALLOWED_CASES, "ONLY_OS_OR_SINGLE_NODE_8P")
+    test_case = environment.get("TEST_CASE", "worker_os_blue")
+    require(test_case in {"worker_os_blue", "os_8p_16p"}, "MANUAL_TEST_CASE_NOT_ALLOWED")
+    selected_cases = ("worker_os_blue",) if test_case == "worker_os_blue" else ALLOWED_CASES
+    selectors = [{"test_id": name} for name in selected_cases]
     number = environment.get("PR_NUMBER", "")
     require(isinstance(number, str) and re.fullmatch(r"[1-9][0-9]{0,9}", number), "INVALID_PR_NUMBER")
     run_identity(api, run_id, control)
@@ -45,7 +47,7 @@ def capture(environment, api, *, clock=time.time, nonce_factory=lambda: secrets.
         "control_sha": control,
         "workflow_path": GH_WORKFLOW,
         "pipeline": "smoke",
-        "selectors": [{"test_id": case}],
+        "selectors": selectors,
         "bridge": {
             "bridge_event_id": "manual:" + run_id,
             "bridge_action_run": run_id,
