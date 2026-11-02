@@ -33,6 +33,17 @@ Prepare 将 App Key 临时写入权限 `0600` 的控制文件，通过 `LITE_ACT
 
 `.gitcode/scripts/lite_gitcode_forward.py` 的当前可执行范围是显式本机控制操作，依赖与 Blue 共享的持久 authority/coordinator 状态。它不适合直接放到无共享状态的官方托管 runner 上，也不要求在 Blue 注册新的原生自托管 runner。
 
+本机 Bridge 可用重复的 `--case TEST_ID` 限定本次请求；省略该选项仍选择当前 release 对应流水线的全部用例。首次仅检查 Blue OS 时，显式使用：
+
+```bash
+python3 -I -B .gitcode/scripts/lite_gitcode_forward.py \
+  --pr "$PR_NUMBER" --expected-head "$EXPECTED_HEAD" --case worker_os_blue
+```
+
+该命令仍要求前述已审核固定控制 checkout、release 配置和持久 authority 状态，不是可绕过发布门禁的独立探针。仅选择 `worker_os_blue` 时，Plan 只有零节点、零设备且无资源池的 OS 用例，不附带 8P/16P 或训练。Smoke release 可分别选择 `dispatch_smoke_8p`、`dispatch_smoke_16p`；训练用例须使用 Nightly release。名称必须属于可信 catalog 中当前流水线，未知、重复、空或跨流水线选择均拒绝，不补充默认用例。
+
+选择按命令顺序写入既有 intent 的 `selectors`，由 SDK 的持久 authority、Artifact intent 摘要及 Plan specification 摘要绑定；不新增签名协议，不改变原始事件证明、Prepare 或发布权限校验。改变选择属于新的 specification，沿用 SDK 的流水线 publication generation 撤销规则，不应与同一 PR/流水线的旧请求并行作为独立发布权使用。
+
 未取得原始事件/run/attempt/快照归属证据时，自动 PR Action 在创建 intent、dispatch 之前拒绝执行；不会转成 periodic 观察而错误地为迟到 A→B→A 事件返回成功。尚未启用的 YAML 位于非注册目录 `.gitcode/workflow-templates/`。完成官方托管 P0 探针及可信事件适配后，必须继续实现和审核自动入口；不能以长期禁用代替交付。
 
 任何新的签名配置需要独立审批；签名本身不证明事件时序。版本绑定结果仍是 `versioned_only`，不是原子合并许可。

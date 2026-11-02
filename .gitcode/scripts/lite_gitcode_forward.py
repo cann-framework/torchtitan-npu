@@ -67,7 +67,30 @@ def watch(runtime, intent, *, clock=time.time, sleep=time.sleep):
         raise
 
 
-def execute(*, environment, number, expected_head="", factory=None, clock=time.time, sleep=time.sleep):
+def select_pipeline_cases(workflow_path, case_ids=None):
+    """Select only trusted catalog entries; omission alone means the full pipeline."""
+    pipeline = {
+        ".github/workflows/lite_actions_dispatcher_smoke.yml": "smoke",
+        ".github/workflows/nightly_fulltests.yml": "nightly",
+    }.get(workflow_path)
+    if pipeline is None:
+        raise ValueError("UNKNOWN_BRIDGE_WORKFLOW")
+    catalog = read_object((CONTROL / "catalog.json").read_text())
+    allowed = catalog["pipelines"][pipeline]
+    names = allowed if case_ids is None else case_ids
+    if not isinstance(names, (list, tuple)) or not 1 <= len(names) <= len(allowed):
+        raise ValueError("INVALID_BRIDGE_CASE_SELECTION")
+    seen = set()
+    selectors = []
+    for name in names:
+        if not isinstance(name, str) or name not in allowed or name not in catalog["cases"] or name in seen:
+            raise ValueError("UNKNOWN_DUPLICATE_OR_CROSS_PIPELINE_CASE")
+        seen.add(name)
+        selectors.append({"test_id": name})
+    return pipeline, selectors
+
+
+def execute(*, environment, number, expected_head="", case_ids=None, factory=None, clock=time.time, sleep=time.sleep):
     trigger = environment.get("LITE_ACTIONS_GITCODE_EVENT_NAME", "manual")
     if trigger not in {"manual", "workflow_dispatch"}:
         # A current H/B match is not proof of the original Action snapshot:
@@ -106,9 +129,7 @@ def execute(*, environment, number, expected_head="", factory=None, clock=time.t
             raise ValueError("BRIDGE_CANNOT_UPLOAD_HOSTED_ARTIFACTS")
 
         runtime = factory(config_path, environment=supplied, upload=no_upload, state_directory=state)
-        catalog = read_object((CONTROL / "catalog.json").read_text())
-        pipeline = "smoke" if runtime.policy.workflow_path.endswith("lite_actions_dispatcher_smoke.yml") else "nightly"
-        selectors = [{"test_id": name} for name in catalog["pipelines"][pipeline]]
+        pipeline, selectors = select_pipeline_cases(runtime.policy.workflow_path, case_ids)
         intent = runtime.authority.create_intent(number, selectors, pipeline=pipeline, trigger_kind="periodic")
         if expected_head and intent["pr"]["head_sha"] != expected_head:
             raise ValueError("LATE_EVENT_HEAD_CHANGED_NO_DISPATCH")
@@ -119,9 +140,18 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--expected-head", default="")
+    parser.add_argument(
+        "--case",
+        dest="case_ids",
+        action="append",
+        metavar="TEST_ID",
+        help="Select a trusted case in this release's pipeline; repeat to select multiple. Default: full pipeline.",
+    )
     args = parser.parse_args(argv)
     try:
-        result = execute(environment=os.environ, number=args.pr, expected_head=args.expected_head)
+        result = execute(
+            environment=os.environ, number=args.pr, expected_head=args.expected_head, case_ids=args.case_ids
+        )
         print(json.dumps(result, sort_keys=True))
         return 0 if result["test_result"] == "PASS" else 1
     except Exception as error:
