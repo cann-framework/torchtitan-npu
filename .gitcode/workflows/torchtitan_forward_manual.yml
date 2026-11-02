@@ -1007,7 +1007,20 @@ stages:
                       "workflow_id": GH_WORKFLOW_ID,
                       "display_title": "lite-gitcode:" + intent["bridge"]["bridge_nonce"],
                   }
-                  require(all(type(run.get(k)) is type(v) and run[k] == v for k, v in expected.items()), "GITHUB_RUN_NOT_EXACT")
+                  for field, expected_value in expected.items():
+                      # Field names come only from this fixed mapping; never print actual values.
+                      require(
+                          field in run,
+                          "GITHUB_RUN_MISSING_" + field.upper(),
+                      )
+                      require(
+                          type(run[field]) is type(expected_value),
+                          "GITHUB_RUN_TYPE_MISMATCH_" + field.upper(),
+                      )
+                      require(
+                          run[field] == expected_value,
+                          "GITHUB_RUN_VALUE_MISMATCH_" + field.upper(),
+                      )
                   require(
                       (run.get("repository") or {}).get("id") == GH_ID
                       and (run.get("repository") or {}).get("full_name") == GH_REPO

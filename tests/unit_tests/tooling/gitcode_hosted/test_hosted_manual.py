@@ -408,6 +408,34 @@ class HostedManualTests(unittest.TestCase):
         )
         self.assertEqual(self.api.posts, 1)
 
+    def test_github_identity_errors_identify_fixed_field_not_untrusted_value(self):
+        intent = self.emit()
+        dispatch.forward(self.api, intent, clock=lambda: self.now)
+        original = copy.deepcopy(self.api.gh_run)
+        for field in ("run_attempt", "event", "head_sha", "head_branch", "workflow_id", "display_title"):
+            missing = copy.deepcopy(original)
+            del missing[field]
+            with self.assertRaisesRegex(common.ManualForwardError, "^GITHUB_RUN_MISSING_" + field.upper() + "$"):
+                dispatch.validate_github_run(missing, intent)
+            wrong_type = copy.deepcopy(original)
+            wrong_type[field] = None
+            with self.assertRaisesRegex(common.ManualForwardError, "^GITHUB_RUN_TYPE_MISMATCH_" + field.upper() + "$"):
+                dispatch.validate_github_run(wrong_type, intent)
+            wrong_value = copy.deepcopy(original)
+            wrong_value[field] = (
+                "sensitive-untrusted-value" if isinstance(original[field], str) else original[field] + 1
+            )
+            with self.assertRaisesRegex(common.ManualForwardError, "^GITHUB_RUN_VALUE_MISMATCH_" + field.upper() + "$"):
+                dispatch.validate_github_run(wrong_value, intent)
+
+    def test_actual_post_failure_github_identity_snapshot_is_exact_not_first_get_proof(self):
+        row = json.loads((Path(__file__).parent / "fixtures/github_41438604990_post_failure.json").read_text())
+        intent = self.emit()
+        intent["control_sha"] = row["head_sha"]
+        intent["bridge"]["bridge_nonce"] = row["display_title"].removeprefix("lite-gitcode:")
+        self.assertEqual(row["scope"], "post_failure_observation_not_first_get")
+        self.assertEqual(dispatch.validate_github_run(row, intent), 41438604990)
+
     def test_lost_dispatch_response_recovers_nonce_without_repost(self):
         intent = self.emit()
         self.api.lose_response = True
