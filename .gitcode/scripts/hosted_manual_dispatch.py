@@ -227,9 +227,7 @@ def retrieve_intent(api, environment, *, clock=time.time):
         "CAPTURE_CONTROL_MISMATCH",
     )
     require(
-        isinstance(intent["selectors"], list)
-        and len(intent["selectors"]) == 1
-        and intent["selectors"][0] in [{"test_id": name} for name in ALLOWED_CASES],
+        intent["selectors"] == [{"test_id": name} for name in ALLOWED_CASES],
         "CAPTURE_CASE_NOT_ALLOWED",
     )
     bridge = intent["bridge"]
@@ -376,6 +374,191 @@ def find_run(api, intent):
     return validate_github_run(matches[0], intent) if matches else None
 
 
+
+CASE_ORDER = {
+    "worker_os_blue": "case_000_worker_os_blue",
+    "dispatch_smoke_8p": "case_001_dispatch_smoke_8p",
+    "dispatch_smoke_16p": "case_002_dispatch_smoke_16p",
+}
+
+
+def case_check(api, intent, run_id, test_id, *, run_conclusion="failure"):
+    require(test_id in CASE_ORDER, "CASE_NOT_IN_FIXED_RESULT_SET")
+    case_id = CASE_ORDER[test_id]
+    request_id = f"{GH_ID}/{run_id}/1"
+    rows, total = [], None
+    for page in range(1, 11):
+        query = urllib.parse.urlencode({
+            "app_id": 5575236, "filter": "all", "per_page": 100, "page": page
+        })
+        response = api.gh(f"/commits/{intent['control_sha']}/check-runs?{query}")
+        checks = response.get("check_runs")
+        count = response.get("total_count")
+        require(type(count) is int and 0 <= count <= 1000 and isinstance(checks, list) and len(checks) <= 100,
+                "CASE_CHECK_LIST_INVALID")
+        if total is None:
+            total = count
+        require(count == total, "CASE_CHECK_LIST_CHANGED")
+        rows.extend(checks)
+        if len(rows) >= total:
+            break
+    require(total is not None and len(rows) == total, "CASE_CHECK_LIST_INCOMPLETE")
+    prefix = f"lite-v4-{run_id}-1-{case_id}-"
+    matches = [row for row in rows if isinstance(row.get("name"), str) and row["name"].startswith(prefix)]
+    require(len(matches) == 1, "CASE_CHECK_MISSING_OR_AMBIGUOUS")
+    check = matches[0]
+    require(
+        type(check.get("id")) is int
+        and check.get("head_sha") == intent["control_sha"]
+        and (check.get("app") or {}).get("id") == 5575236
+        and check.get("details_url") == f"https://github.com/{GH_REPO}/actions/runs/{run_id}"
+        and isinstance(check.get("external_id"), str)
+        and check["external_id"].startswith("lite-actions:v4:"),
+        "CASE_CHECK_IDENTITY_MISMATCH",
+    )
+    html = check.get("html_url")
+    require(
+        isinstance(html, str)
+        and re.fullmatch(r"https://github\.com/" + re.escape(GH_REPO) + r"/runs/[0-9]+(?:\?[^\s]*)?", html),
+        "CASE_CHECK_HTML_URL_INVALID",
+    )
+    if check.get("status") != "completed":
+        require(
+            check.get("status") in {"queued", "in_progress"}
+            and run_conclusion in {"failure", "cancelled", "timed_out"},
+            "CASE_CHECK_NOT_TERMINAL",
+        )
+        require(
+            re.fullmatch(re.escape(prefix) + r"[0-9a-f]{12}", check.get("name", "")),
+            "CASE_CHECK_NAME_INVALID",
+        )
+        return {
+            "case_id": case_id,
+            "test_id": test_id,
+            "case_status": "NOT_RUN",
+            "reason": "GitHub workflow concluded " + str(run_conclusion) + " before this Case published a terminal result",
+            "github_run_id": run_id,
+            "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
+            "case_check_url": html,
+            "case_log_url": html,
+            "check_id": check["id"],
+        }
+    output = check.get("output") or {}
+    try:
+        envelope = json.loads(output.get("summary", ""))
+    except (TypeError, ValueError):
+        raise ManualForwardError("CASE_CHECK_SUMMARY_INVALID") from None
+    require(
+        isinstance(envelope, dict)
+        and envelope.get("schema") == 4
+        and envelope.get("phase") == "CASE_RESULT"
+        and envelope.get("result", {}).get("case_id") == case_id
+        and envelope.get("receipt", {}).get("request_id") == request_id,
+        "CASE_CHECK_IDENTITY_MISMATCH",
+    )
+    receipt = envelope["receipt"]
+    spec = receipt.get("request_spec_digest")
+    require(
+        isinstance(spec, str)
+        and re.fullmatch(r"[0-9a-f]{64}", spec)
+        and receipt.get("plan_digest") == envelope.get("plan_digest"),
+        "CASE_CHECK_SPEC_INVALID",
+    )
+    require(check["name"] == prefix + spec[:12], "CASE_CHECK_SPEC_MISMATCH")
+    expected_external = "lite-actions:v4:" + hashlib.sha256(canonical({
+        "repo_id": GH_ID,
+        "run_id": run_id,
+        "run_attempt": 1,
+        "case_id": case_id,
+        "request_spec_digest": spec,
+    })).hexdigest()
+    require(check.get("external_id") == expected_external, "CASE_CHECK_EXTERNAL_ID_MISMATCH")
+    result = envelope["result"]
+    status = result.get("status")
+    require(status in {"PASS", "FAIL", "INFRA_ERROR", "CANCELLED", "TIMED_OUT", "NOT_RUN", "RESOURCE_TIMEOUT"},
+            "CASE_STATUS_INVALID")
+    require(
+        set(result) == {"case_id", "receipt", "identity", "status", "exit_code", "cleanup_verified", "summary"}
+        and type(result.get("exit_code")) is int
+        and -255 <= result["exit_code"] <= 255
+        and type(result.get("cleanup_verified")) is bool
+        and isinstance(result.get("identity"), dict)
+        and isinstance(result.get("summary"), list)
+        and len(result["summary"]) <= 20
+        and all(isinstance(item, str) and len(item) <= 180 and not any(ord(c) < 32 for c in item) for item in result["summary"])
+        and result.get("receipt") == receipt
+        and (status != "PASS" or result["exit_code"] == 0),
+        "CASE_RESULT_SHAPE_INVALID",
+    )
+    require(check.get("status") == "completed", "CASE_CHECK_NOT_TERMINAL")
+    expected_conclusion = (
+        "success" if status == "PASS" and result.get("cleanup_verified") is True
+        else "cancelled" if status == "CANCELLED"
+        else "timed_out" if status == "TIMED_OUT"
+        else "action_required" if status == "NOT_RUN"
+        else "failure"
+    )
+    require(check.get("conclusion") == expected_conclusion, "CASE_CHECK_CONCLUSION_MISMATCH")
+    return {
+        "case_id": case_id,
+        "test_id": test_id,
+        "case_status": status,
+        "reason": "; ".join(result["summary"]) or status,
+        "github_run_id": run_id,
+        "github_run_url": f"https://github.com/{GH_REPO}/actions/runs/{run_id}",
+        "case_check_url": html,
+        "case_log_url": html,
+        "check_id": check["id"],
+        "plan_digest": envelope["plan_digest"],
+        "receipt": receipt,
+    }
+
+
+
+def result_main():
+    case = os.environ.get("RESULT_CASE", "unknown")
+    run_id = None
+    try:
+        api = API(os.environ)
+        require(case in CASE_ORDER, "CASE_NOT_IN_FIXED_RESULT_SET")
+        capture_result = os.environ.get("CAPTURE_RESULT", "success")
+        if capture_result != "success":
+            payload = {
+                "test_id": case,
+                "case_status": "NOT_RUN",
+                "reason": "GitCode Capture did not complete; no GitHub execution was authorized",
+                "github_run_id": None,
+                "github_run_url": None,
+                "case_log_url": None,
+            }
+            print(json.dumps(payload, sort_keys=True))
+            return 1
+        intent = retrieve_intent(api, os.environ)
+        run_id = find_run(api, intent)
+        require(run_id is not None, "EXACT_GITHUB_RUN_NOT_FOUND")
+        run = api.gh(f"/actions/runs/{run_id}")
+        validate_github_run(run, intent)
+        require(run.get("status") == "completed", "GITHUB_RUN_NOT_TERMINAL")
+        result = case_check(api, intent, run_id, case, run_conclusion=run.get("conclusion"))
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result["case_status"] == "PASS" else 1
+    except Exception as error:
+        code = str(error) if isinstance(error, ManualForwardError) else type(error).__name__
+        payload = {
+            "test_id": case,
+            "case_status": "INFRA_ERROR",
+            "reason": "MANUAL_FORWARD_FAILED:" + code,
+            "github_run_id": run_id,
+            "github_run_url": (
+                f"https://github.com/{GH_REPO}/actions/runs/{run_id}" if run_id else None
+            ),
+            "case_log_url": None,
+        }
+        print(json.dumps(payload, sort_keys=True))
+        return 1
+
+
+
 def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _: None):
     require(int(clock()) < intent["deadline"], "MANUAL_DEADLINE_EXCEEDED")
     release(api, intent["control_sha"])
@@ -452,6 +635,15 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
                     and matches[0].get("run_attempt") == 1,
                     "GITHUB_FIXED_RESULT_JOB_NOT_PASS",
                 )
+            case_results = [
+                case_check(api, intent, run_id, test_id, run_conclusion=run.get("conclusion")) for test_id in ALLOWED_CASES
+            ]
+            require(
+                len({item["plan_digest"] for item in case_results}) == 1
+                and all(item["receipt"] == case_results[0]["receipt"] for item in case_results)
+                and all(item["case_status"] == "PASS" for item in case_results),
+                "THREE_CASE_RESULT_SET_NOT_GREEN",
+            )
             require(snapshot(api, intent["pr"]["number"]) == intent["pr"], "FINAL_PR_STALE")
             release(api, intent["control_sha"])
             run_identity(api, intent["bridge"]["bridge_action_run"], intent["control_sha"])
@@ -470,6 +662,8 @@ def forward(api, intent, *, clock=time.time, sleep=time.sleep, progress=lambda _
 
 
 def main():
+    if os.environ.get("RESULT_CASE"):
+        return result_main()
     try:
         api = API(os.environ)
         intent = retrieve_intent(api, os.environ)

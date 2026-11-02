@@ -19,7 +19,8 @@ CAPTURE_STEP = "1"
 CAPTURE_NAME = "Capture manual request"
 PREFIX = "LITE_GITCODE_MANUAL_CAPTURE_V1 "
 ALLOWED_ACTOR = "depeng1994"
-ALLOWED_CASES = {"worker_os_blue", "dispatch_smoke_8p"}
+ALLOWED_CASES = ("worker_os_blue", "dispatch_smoke_8p", "dispatch_smoke_16p")
+CHECKS_APP_ID = 5575236
 
 
 class ManualForwardError(RuntimeError):

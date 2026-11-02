@@ -75,6 +75,8 @@ class FakeAPI:
         self.posts = 0
         self.lose_response = False
         self.drop_dispatch = False
+        self.intent = None
+        self.case_checks = []
         self.completed_jobs = [
             {"name": name, "status": "completed", "conclusion": "success", "run_id": 42, "run_attempt": 1}
             for name in ("prepare-gitcode", "wait-gitcode", "Lite-Actions-GitCode-Smoke")
@@ -115,6 +117,51 @@ class FakeAPI:
             assert dispatch
             self.posts += 1
             intent = json.loads(body["inputs"]["gitcode_request"])
+            self.intent = copy.deepcopy(intent)
+            self.case_checks = []
+            spec = "d" * 64
+            for index, test_id in enumerate(common.ALLOWED_CASES):
+                case_id = dispatch_module_case_id(test_id)
+                receipt = {
+                    "request_id": f"{common.GH_ID}/42/1",
+                    "request_spec_digest": spec,
+                    "plan_digest": "e" * 64,
+                }
+                result = {
+                    "case_id": case_id,
+                    "receipt": receipt,
+                    "identity": {"pr": {}, "merge": {}, "control": {}},
+                    "status": "PASS",
+                    "exit_code": 0,
+                    "cleanup_verified": True,
+                    "summary": [test_id + " passed"],
+                }
+                envelope = {
+                    "schema": 4,
+                    "phase": "CASE_RESULT",
+                    "plan_digest": "e" * 64,
+                    "receipt": receipt,
+                    "result": result,
+                }
+                external_id = "lite-actions:v4:" + hashlib.sha256(common.canonical({
+                    "repo_id": common.GH_ID,
+                    "run_id": 42,
+                    "run_attempt": 1,
+                    "case_id": case_id,
+                    "request_spec_digest": spec,
+                })).hexdigest()
+                self.case_checks.append({
+                    "id": 8000 + index,
+                    "name": f"lite-v4-42-1-{case_id}-{spec[:12]}",
+                    "head_sha": S,
+                    "app": {"id": common.CHECKS_APP_ID},
+                    "external_id": external_id,
+                    "details_url": f"https://github.com/{common.GH_REPO}/actions/runs/42",
+                    "html_url": f"https://github.com/{common.GH_REPO}/runs/{8000 + index}",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "output": {"summary": json.dumps(envelope, sort_keys=True, separators=(",", ":"))},
+                })
             if not self.drop_dispatch:
                 self.gh_run = {
                     "id": 42,
@@ -137,11 +184,21 @@ class FakeAPI:
                 "run_url": f"https://api.github.com/repos/{common.GH_REPO}/actions/runs/42",
                 "html_url": f"https://github.com/{common.GH_REPO}/actions/runs/42",
             }
+        if suffix.startswith(f"/commits/{S}/check-runs?"):
+            return {"total_count": len(self.case_checks), "check_runs": copy.deepcopy(self.case_checks)}
         if suffix == "/actions/runs/42":
             return copy.deepcopy(self.gh_run)
         if suffix.startswith("/actions/runs/42/jobs?"):
             return {"total_count": len(self.completed_jobs), "jobs": copy.deepcopy(self.completed_jobs)}
         raise AssertionError(suffix)
+
+
+def dispatch_module_case_id(test_id):
+    return {
+        "worker_os_blue": "case_000_worker_os_blue",
+        "dispatch_smoke_8p": "case_001_dispatch_smoke_8p",
+        "dispatch_smoke_16p": "case_002_dispatch_smoke_16p",
+    }[test_id]
 
 
 class HostedManualTests(unittest.TestCase):
@@ -158,7 +215,6 @@ class HostedManualTests(unittest.TestCase):
             "ACTOR": "depeng1994",
             "CONTROL_SHA": S,
             "PR_NUMBER": "2",
-            "TEST_CASE": "worker_os_blue",
         }
         self.now = 1000
         self.patch = patch.object(dispatch, "CAPTURE_SCRIPT_SHA256", builder.scripts()[2])
@@ -179,15 +235,21 @@ class HostedManualTests(unittest.TestCase):
         self.assertEqual(set(doc["on"]), {"workflow_dispatch"})
         self.assertEqual(doc["permissions"]["action"], "read")
         jobs = doc["stages"]["manual"]["jobs"]
-        self.assertEqual(set(jobs), {"manual_capture", "manual_forward"})
+        self.assertEqual(
+            set(jobs),
+            {"manual_capture", "manual_forward", "case_os_result", "case_8p_result", "case_16p_result"},
+        )
         self.assertEqual(jobs["manual_forward"]["needs"], ["manual_capture"])
         self.assertEqual(len(jobs["manual_capture"]["steps"]), 1)
+        self.assertEqual(jobs["case_os_result"]["needs"], ["manual_capture", "manual_forward"])
+        self.assertEqual(jobs["case_8p_result"]["needs"], ["manual_capture", "manual_forward"])
+        self.assertEqual(jobs["case_16p_result"]["needs"], ["manual_capture", "manual_forward"])
         for name, job in jobs.items():
             step = job["steps"][0]
             self.assertLessEqual(len(step["env"]), 20)
             self.assertNotIn("uses", step)
             self.assertNotIn("CHECKS", str(step["env"]))
-            self.assertEqual("LITE_ACTIONS_GITHUB_TOKEN" in step["env"], name == "manual_forward")
+            self.assertEqual("LITE_ACTIONS_GITHUB_TOKEN" in step["env"], name != "manual_capture")
             self.assertIn("python3 -I -B", step["run"])
             self.assertNotIn("from hosted_manual_common", step["run"])
         self.assertEqual(hashlib.sha256(jobs["manual_capture"]["steps"][0]["run"].encode()).hexdigest(), digest)
@@ -227,6 +289,10 @@ class HostedManualTests(unittest.TestCase):
         self.assertEqual(proof.intent, intent)
         self.assertEqual(proof.capture_kind, "manual_api")
         self.assertEqual(intent["pr"]["base_sha"], S)  # never PR's stale base.sha
+        self.assertEqual(
+            intent["selectors"],
+            [{"test_id": "worker_os_blue"}, {"test_id": "dispatch_smoke_8p"}, {"test_id": "dispatch_smoke_16p"}],
+        )
 
     def test_manual_only_attempt_repo_actor_and_case_boundaries(self):
         for field, value in (
@@ -235,12 +301,140 @@ class HostedManualTests(unittest.TestCase):
             ("RUN_ATTEMPT", "2"),
             ("REPOSITORY", "cann/torchtitan-npu"),
             ("ACTOR", "other"),
-            ("TEST_CASE", "dispatch_smoke_16p"),
-            ("TEST_CASE", "dsv4_flash_a3_8p_example"),
             ("PR_NUMBER", "2;echo leak"),
         ):
             with self.subTest(field=field, value=value), self.assertRaises(common.ManualForwardError):
                 capture.capture({**self.env, field: value}, self.api)
+
+    def test_capture_is_one_exact_three_case_intent(self):
+        intent = self.emit()
+        self.assertEqual(
+            intent["selectors"],
+            [
+                {"test_id": "worker_os_blue"},
+                {"test_id": "dispatch_smoke_8p"},
+                {"test_id": "dispatch_smoke_16p"},
+            ],
+        )
+        for invalid in (
+            [{"test_id": "worker_os_blue"}, {"test_id": "dispatch_smoke_8p"}],
+            [
+                {"test_id": "worker_os_blue"},
+                {"test_id": "dispatch_smoke_8p"},
+                {"test_id": "dispatch_smoke_8p"},
+            ],
+            [
+                {"test_id": "worker_os_blue"},
+                {"test_id": "dispatch_smoke_8p"},
+                {"test_id": "dsv4_flash_a3_8p_example"},
+            ],
+        ):
+            changed = copy.deepcopy(intent)
+            changed["selectors"] = invalid
+            payload = common.canonical({
+                "schema": 1,
+                "kind": "manual-current-observation",
+                "captured_at": self.now,
+                "intent": changed,
+            })
+            self.api.log = common.PREFIX + hashlib.sha256(payload).hexdigest() + " " + __import__("base64").b64encode(payload).decode() + "\n"
+            with self.subTest(selectors=invalid), self.assertRaisesRegex(common.ManualForwardError, "CASE_NOT_ALLOWED"):
+                dispatch.retrieve_intent(self.api, self.env, clock=lambda: self.now)
+
+    def test_case_check_is_bound_to_run_case_plan_app_and_status(self):
+        intent = self.emit()
+        run_id = 42
+        case_id = dispatch.CASE_ORDER["dispatch_smoke_16p"]
+        spec = "d" * 64
+        receipt = {
+            "request_id": f"{common.GH_ID}/{run_id}/1",
+            "request_spec_digest": spec,
+            "plan_digest": "e" * 64,
+        }
+        result = {
+            "case_id": case_id,
+            "receipt": receipt,
+            "identity": {"pr": {}, "merge": {}, "control": {}},
+            "status": "CANCELLED",
+            "exit_code": 143,
+            "cleanup_verified": True,
+            "summary": ["cancelled by operator", "cleanup verified"],
+        }
+        envelope = {
+            "schema": 4,
+            "phase": "CASE_RESULT",
+            "plan_digest": "e" * 64,
+            "receipt": receipt,
+            "result": result,
+        }
+        external_id = "lite-actions:v4:" + hashlib.sha256(common.canonical({
+            "repo_id": common.GH_ID,
+            "run_id": run_id,
+            "run_attempt": 1,
+            "case_id": case_id,
+            "request_spec_digest": spec,
+        })).hexdigest()
+        check = {
+            "id": 7654,
+            "name": f"lite-v4-{run_id}-1-{case_id}-{spec[:12]}",
+            "head_sha": intent["control_sha"],
+            "app": {"id": common.CHECKS_APP_ID},
+            "external_id": external_id,
+            "details_url": f"https://github.com/{common.GH_REPO}/actions/runs/{run_id}",
+            "html_url": f"https://github.com/{common.GH_REPO}/runs/7654",
+            "status": "completed",
+            "conclusion": "cancelled",
+            "output": {"summary": json.dumps(envelope, sort_keys=True, separators=(",", ":"))},
+        }
+        original = self.api.gh
+
+        def with_check(suffix, **kwargs):
+            if suffix.startswith(f"/commits/{intent['control_sha']}/check-runs?"):
+                return {"total_count": 1, "check_runs": [copy.deepcopy(check)]}
+            return original(suffix, **kwargs)
+
+        self.api.gh = with_check
+        observed = dispatch.case_check(self.api, intent, run_id, "dispatch_smoke_16p")
+        self.assertEqual(observed["case_status"], "CANCELLED")
+        self.assertIn("cancelled by operator", observed["reason"])
+        self.assertEqual(observed["github_run_url"], f"https://github.com/{common.GH_REPO}/actions/runs/{run_id}")
+        self.assertEqual(observed["case_log_url"], check["html_url"])
+
+        check["conclusion"] = "success"
+        with self.assertRaisesRegex(common.ManualForwardError, "CONCLUSION_MISMATCH"):
+            dispatch.case_check(self.api, intent, run_id, "dispatch_smoke_16p")
+        check["conclusion"] = "cancelled"
+        check["name"] = f"lite-v4-999-1-{case_id}-{spec[:12]}"
+        with self.assertRaisesRegex(common.ManualForwardError, "MISSING_OR_AMBIGUOUS"):
+            dispatch.case_check(self.api, intent, run_id, "dispatch_smoke_16p")
+
+    def test_result_job_marks_cancelled_as_failure_with_explicit_case_status(self):
+        import io
+        from contextlib import redirect_stdout
+
+        output = io.StringIO()
+        with patch.dict(
+            "os.environ",
+            {
+                "EVENT_NAME": "Manual",
+                "ATOMGIT_EVENT_NAME": "Manual",
+                "RUN_ATTEMPT": "1",
+                "ATOMGIT_RUN_ID": "run1",
+                "REPOSITORY": common.GC_REPO,
+                "REPOSITORY_ID": common.GC_ID,
+                "REF": "refs/heads/master",
+                "ACTOR": common.ALLOWED_ACTOR,
+                "CONTROL_SHA": S,
+                "RESULT_CASE": "dispatch_smoke_16p",
+                "CAPTURE_RESULT": "failure",
+            },
+            clear=True,
+        ), redirect_stdout(output):
+            self.assertEqual(dispatch.result_main(), 1)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["case_status"], "NOT_RUN")
+        self.assertIsNone(payload["github_run_url"])
+        self.assertIn("Capture did not complete", payload["reason"])
 
     def test_capture_rejects_external_source_and_unstable_head(self):
         self.api.pr["head"]["repo"]["full_name"] = "other/fork"

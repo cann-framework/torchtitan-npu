@@ -45,11 +45,6 @@ on:
         description: Open personal-repository PR number
         type: number
         required: true
-      test_case:
-        description: Bounded no-weight case; 8P executes at most 75 seconds
-        type: choice
-        options: [worker_os_blue, dispatch_smoke_8p]
-        default: worker_os_blue
 permissions:
   action: read
   repository: read
@@ -91,13 +86,39 @@ stages:
         )
         values = dict(env)
         if key == "manual_capture":
-            values.update(PR_NUMBER="${{ inputs.pr_number }}", TEST_CASE="${{ inputs.test_case }}")
+            values.update(PR_NUMBER="${{ inputs.pr_number }}")
         else:
             values["LITE_ACTIONS_GITHUB_TOKEN"] = "${{ secrets.LITE_ACTIONS_GITHUB_TOKEN }}"
         for field, value in values.items():
             header += "              " + field + ": " + value + "\n"
         header += "            run: |\n" + "".join(
             ("              " + line if line else "") + "\n" for line in script.splitlines()
+        )
+    for case_id, case_name, label in (
+        ("worker_os_blue", "case_os_result", "OS result"),
+        ("dispatch_smoke_8p", "case_8p_result", "8P result"),
+        ("dispatch_smoke_16p", "case_16p_result", "16P result"),
+    ):
+        header += "      " + case_name + ":\n        name: " + label + "\n"
+        header += (
+            "        if: ${{ always() && atomgit.repository == 'depeng1994/torchtitan-npu' && "
+            "atomgit.event_name == 'Manual' && atomgit.ref == 'refs/heads/master' }}\n"
+            "        needs: [manual_capture, manual_forward]\n"
+            "        runs-on: [ubuntu-latest, x64, small]\n"
+            "        timeout-minutes: 5\n"
+            "        steps:\n          - name: Publish " + label + "\n"
+            "            shell: bash\n            working-directory: '.'\n            env:\n"
+        )
+        values = dict(env)
+        values.update(
+            LITE_ACTIONS_GITHUB_TOKEN="${{ secrets.LITE_ACTIONS_GITHUB_TOKEN }}",
+            RESULT_CASE=case_id,
+            CAPTURE_RESULT="${{ needs.manual_capture.result }}",
+        )
+        for field, value in values.items():
+            header += "              " + field + ": " + value + "\n"
+        header += "            run: |\n" + "".join(
+            ("              " + line if line else "") + "\n" for line in dispatch.splitlines()
         )
     return header, digest
 
