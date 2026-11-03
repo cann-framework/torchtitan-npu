@@ -9,9 +9,9 @@ OUTPUT = ROOT / ".gitcode/workflows/torchtitan_forward_manual.yml"
 DIAGNOSTIC_OUTPUT = ROOT / ".gitcode/workflows/torchtitan_bootstrap_diagnostic.yml"
 
 # Updated only from a reviewed immutable SDK Git object.
-SDK_SHA = "b19d6ba11f03795fb42c8d9301f9c39900c73150"
-BUNDLE_SHA256 = "16e359b7654ddb1453bf9753fbfa0c683009aac297571f2b9abd11470d11fffc"
-RAW_SHA256 = "7067ab47284c38674dc45fefd81351d9ad5f595f1294a0a90a9819a9cecd8c4a"
+SDK_SHA = "2ed8c74c7483396904618a647e5cfcb89e1e9a34"
+BUNDLE_SHA256 = "bd27f337638cd52a85b7474c159d7da4333602e23365aee12a481ae5c77f0577"
+RAW_SHA256 = "902da91808b5a39125276045ad0fc744444ffc7b0c7a9a0f9e89a72efe0475f7"
 BUNDLE = ROOT / ".gitcode/workflow-templates/manual_sdk_bundle.b64"
 SDK_FILES = (
     "ci_core/__init__.py",
@@ -109,9 +109,9 @@ on:
         type: number
         required: true
       test_case:
-        description: worker_os_blue keeps the current OS-only route; os_8p_16p explicitly selects all three cases
+        description: worker_os_blue selects OS; os_8p selects OS and 8P; os_8p_16p selects all three cases
         type: choice
-        options: [worker_os_blue, os_8p_16p]
+        options: [worker_os_blue, os_8p, os_8p_16p]
         default: worker_os_blue
 permissions:
   action: read

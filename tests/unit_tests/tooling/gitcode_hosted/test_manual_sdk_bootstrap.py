@@ -87,6 +87,7 @@ class ManualSdkBootstrapTests(unittest.TestCase):
             ["manual_capture", "manual_forward", "case_os_result", "case_8p_result", "case_16p_result"],
         )
         self.assertEqual(self.document["on"]["workflow_dispatch"]["inputs"]["test_case"]["default"], "worker_os_blue")
+        self.assertEqual(self.document["on"]["workflow_dispatch"]["inputs"]["test_case"]["options"], ["worker_os_blue", "os_8p", "os_8p_16p"])
 
     def test_real_embedded_sdk_aggregate_passes_without_network(self):
         result = self.run_script(
