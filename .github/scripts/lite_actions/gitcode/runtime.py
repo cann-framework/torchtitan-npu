@@ -213,11 +213,26 @@ def safe_failure(error, phase):
     code = "UNCLASSIFIED"
     if source and len(error.args) == 1 and type(error.args[0]) is str and error.args[0] in SOURCE_ERROR_CODES:
         code = error.args[0]
-    return {
+    result = {
         "phase": phase if phase in {"prepare", "wait"} else "unknown",
         "stage": "SOURCE" if source else "HOSTED",
         "code": code,
     }
+    if phase == "wait" and not source:
+        # Only fixed labels are exposed: exception messages and API bodies may
+        # contain credentials or untrusted data and must remain private.
+        allowed = {
+            "WaiterError", "AuthorityChannelError", "ChannelError",
+            "GitCodeAPIError", "HTTPError", "URLError", "TimeoutError",
+            "KeyError", "TypeError", "ValueError", "OSError", "RuntimeError",
+        }
+        name = type(error).__name__
+        result["error_type"] = name if name in allowed else "OTHER"
+        if name == "HTTPError" and type(getattr(error, "code", None)) is int:
+            status = error.code
+            if 100 <= status <= 599:
+                result["http_status"] = status
+    return result
 
 
 def main(argv=None):

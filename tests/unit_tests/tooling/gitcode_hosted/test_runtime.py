@@ -74,6 +74,25 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.main(["prepare"]), 1)
             self.assertIn("FETCHED_REF_SHA_MISMATCH", str(stderr.write.call_args_list))
 
+    def test_wait_failure_diagnostics_only_reveal_fixed_types_and_http_status(self):
+        import urllib.error
+
+        error = urllib.error.HTTPError(
+            "https://example.invalid/token-secret", 403, "token-secret", {}, None
+        )
+        self.assertEqual(
+            runtime.safe_failure(error, "wait"),
+            {"phase": "wait", "stage": "HOSTED", "code": "UNCLASSIFIED",
+             "error_type": "HTTPError", "http_status": 403},
+        )
+        error = KeyError("token-secret")
+        diagnostic = runtime.safe_failure(error, "wait")
+        self.assertEqual(diagnostic["error_type"], "KeyError")
+        self.assertNotIn("token-secret", json.dumps(diagnostic))
+        class SecretException(Exception):
+            pass
+        self.assertEqual(runtime.safe_failure(SecretException("token-secret"), "wait")["error_type"], "OTHER")
+
     def test_prepare_builds_trusted_runner_and_cleans_private_key(self):
         producer = Mock(policy=self.policy)
         producer.prepare.return_value = {"plan_digest": "sealed"}
