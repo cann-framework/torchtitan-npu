@@ -95,6 +95,8 @@
     </li>
     </ul>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../pr18-bootstrap-diagnostic-cleanup-plan-20261103/">PR18 bootstrap diagnostic cleanup and PR-trigger safety plan — 2026-11-03</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../sdk-bootstrap-review-closure-20261103/">SDK bootstrap review closure — 2026-11-03</a>
                   </li>
               </ul>
@@ -190,8 +192,13 @@
 <p>This is a strong static cause consistent with the runtime reason, but not claimed as an independently observed exact bac91c response field.</p>
 <h2 id="minimal-correction">Minimal correction</h2>
 <p>Changed only model generator capture step ID to <code>1</code>; the job identifier remains <code>manual_capture</code>. The generated workflow is regenerated from the builder. No SDK identity checks were weakened or removed. Name, shell, working directory, generated script SHA-256, task, sequence, job binding, status, command digest, and retained evidence re-read remain strict.</p>
-<p>The capture bootstrap script digest is unchanged:
-<code>8eb518a2fc3708de3f8e41015fb952d68f3b767754e699eb1697c33df5ab442d</code>.</p>
+<p>At this historical step-ID correction, the capture bootstrap digest was
+<code>8eb518a2fc3708de3f8e41015fb952d68f3b767754e699eb1697c33df5ab442d</code>.
+That digest is superseded by the later reviewed phase-diagnostic bootstrap:
+<code>2a468c43fa38a69d6e037965c6f4b003039261e5f3307396d0d5f3e94367e1ca</code>.
+The latter is the current generated digest for all six formal jobs and is the
+value carried by the current PR18 workflow generator. The historical test and
+step-ID evidence above remains valid for its original revision only.</p>
 <h2 id="regression-evidence">Regression evidence</h2>
 <p>New model test:
 <code>tests/unit_tests/test_gitcode_manual_capture_step_contract.py</code></p>
@@ -214,7 +221,7 @@ This is real sanitized b472 platform metadata, not bac91c.</p>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
         <a href="../../developer_guides/unit-test-architecture/" class="btn btn-neutral float-left" title="Unit Test 架构与迁移方案"><span class="icon icon-circle-arrow-left"></span> Previous</a>
-        <a href="../sdk-bootstrap-review-closure-20261103/" class="btn btn-neutral float-right" title="SDK bootstrap review closure — 2026-11-03">Next <span class="icon icon-circle-arrow-right"></span></a>
+        <a href="../pr18-bootstrap-diagnostic-cleanup-plan-20261103/" class="btn btn-neutral float-right" title="PR18 bootstrap diagnostic cleanup and PR-trigger safety plan — 2026-11-03">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
   <hr/>
@@ -240,7 +247,7 @@ This is real sanitized b472 platform metadata, not bac91c.</p>
       <span><a href="../../developer_guides/unit-test-architecture/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
-      <span><a href="../sdk-bootstrap-review-closure-20261103/" style="color: #fcfcfc">Next &raquo;</a></span>
+      <span><a href="../pr18-bootstrap-diagnostic-cleanup-plan-20261103/" style="color: #fcfcfc">Next &raquo;</a></span>
     
   </span>
 </div>
