@@ -1,5 +1,3 @@
-[Reading 65 lines from start (total: 65 lines, 0 remaining)]
-
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
 # Licensed under the BSD-style license found in the LICENSE file.
 
@@ -65,5 +63,3 @@ class GitCodeManualCaptureStepContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
-[executed on device: depeng_us_euler (f1ca6a21-0dcf-4acf-88a7-f96f0ffc2b10)]
