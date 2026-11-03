@@ -1,5 +1,3 @@
-[Reading 50 lines from start (total: 50 lines, 0 remaining)]
-
 # Manual capture step identity contract correction — 2026-11-03
 
 ## Failure and evidence boundary
@@ -50,5 +48,3 @@ Hashes:
 - test log: `cab57d5801eb4fcdd2b852f29f3c67e87c7ef6c11d6e54a8c53a9dce5bd531a1`
 
 No source commit, push, PR, release, deployment, or new dispatch has yet been made for this correction.
-
-[executed on device: depeng_us_euler (f1ca6a21-0dcf-4acf-88a7-f96f0ffc2b10)]
