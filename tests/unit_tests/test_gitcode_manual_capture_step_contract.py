@@ -57,7 +57,7 @@ class GitCodeManualCaptureStepContractTests(unittest.TestCase):
         self.assertEqual(forward["env"]["LITE_GITCODE_CAPTURE_SCRIPT_SHA256"], script_sha)
         self.assertEqual(
             script_sha,
-            "aaece5c50b018bc6e77dfe2d5625099ce31d585014e92268e852603c139d48c2",
+            "38497c1f3c67fead067844da0700d875aa0509933146849fda8a0fed4a15944d",
         )
 
 

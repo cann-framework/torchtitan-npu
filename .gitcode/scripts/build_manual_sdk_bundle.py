@@ -9,7 +9,7 @@ import subprocess
 import zlib
 from pathlib import Path
 
-SDK_SHA = "2ed8c74c7483396904618a647e5cfcb89e1e9a34"
+SDK_SHA = "035767c23ea15501d515de37fcd515d98b72d906"
 SDK_FILES = (
     "ci_core/__init__.py",
     "ci_core/gitcode_manual/__init__.py",
