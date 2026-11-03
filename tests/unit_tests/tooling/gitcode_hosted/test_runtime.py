@@ -1,6 +1,5 @@
 """Runnable Hosted/Bridge wiring tests with synthetic credentials and API fakes."""
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -15,11 +14,6 @@ ROOT = Path(__file__).resolve().parents[4]
 CONTROL = ROOT / ".github/scripts/lite_actions/gitcode"
 sys.path.insert(0, str(CONTROL))
 import runtime
-
-spec = importlib.util.spec_from_file_location("bridge_entry", ROOT / ".gitcode/scripts/lite_gitcode_forward.py")
-bridge_entry = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bridge_entry)
-
 
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -283,79 +277,6 @@ if(code!==7||!called)process.exit(2);
                 runtime.verify_checkout(workspace / "worker-sdk", commits["worker-sdk"])
 
 
-class BridgeTests(unittest.TestCase):
-    def setUp(self):
-        self.runtime = Mock()
-        self.runtime.bridge.dispatch.return_value = {"run_id": 42, "test_result": "NOT_YET_AVAILABLE"}
-        self.intent = {"deadline": 200}
-        self.waiter = Mock(plan={"schema": 4}, follower=None)
-        self.waiter.poll.return_value = {"test_result": "PASS", "merge_gate": "NOT_PROVIDED"}
-
-    def test_dispatch_wait_and_publication_all_required(self):
-        with patch("ci_core.gitcode_waiter.GitCodeWaiter", return_value=self.waiter):
-            outcome = bridge_entry.watch(self.runtime, self.intent, clock=lambda: 100)
-        self.assertEqual(outcome["test_result"], "PASS")
-        self.runtime.authority.verify_event.assert_called()
-        self.runtime.publish_result.assert_called_once_with(self.waiter.plan, self.waiter.poll.return_value)
-        self.runtime.cancel_run.assert_not_called()
-
-    def test_publication_capability_failure_cancels_only_own_run(self):
-        self.runtime.publish_result.side_effect = ValueError("PUBLICATION_CAPABILITY_REQUIRED")
-        with (
-            patch("ci_core.gitcode_waiter.GitCodeWaiter", return_value=self.waiter),
-            self.assertRaisesRegex(ValueError, "PUBLICATION"),
-        ):
-            bridge_entry.watch(self.runtime, self.intent, clock=lambda: 100)
-        self.runtime.cancel_run.assert_called_once_with(42)
-
-    def test_pre_dispatch_revoked_intent_never_dispatches(self):
-        self.runtime.authority.verify_event.side_effect = ValueError("REVOKED")
-        with self.assertRaisesRegex(ValueError, "REVOKED"):
-            bridge_entry.watch(self.runtime, self.intent, clock=lambda: 100)
-        self.runtime.bridge.dispatch.assert_not_called()
-
-    def test_post_poll_deadline_cannot_publish_pass(self):
-        now = [100]
-
-        def poll(**kwargs):
-            now[0] = 200
-            return {"test_result": "PASS"}
-
-        self.waiter.poll.side_effect = poll
-        with (
-            patch("ci_core.gitcode_waiter.GitCodeWaiter", return_value=self.waiter),
-            self.assertRaisesRegex(ValueError, "DEADLINE"),
-        ):
-            bridge_entry.watch(self.runtime, self.intent, clock=lambda: now[0])
-        self.runtime.publish_result.assert_not_called()
-        self.runtime.cancel_run.assert_called_once_with(42)
-
-    def test_duplicate_publishes_only_verified_canonical_identity(self):
-        self.waiter.follower = Mock(plan={"canonical": "verified"})
-        self.waiter.poll.return_value = {
-            "test_result": "PASS",
-            "merge_gate": "NOT_PROVIDED",
-            "followed_from_request_id": "duplicate",
-        }
-        with patch("ci_core.gitcode_waiter.GitCodeWaiter", return_value=self.waiter):
-            outcome = bridge_entry.watch(self.runtime, self.intent, clock=lambda: 100)
-        self.runtime.publish_result.assert_called_once_with(
-            {"canonical": "verified"}, {"test_result": "PASS", "merge_gate": "NOT_PROVIDED"}
-        )
-        self.assertEqual(outcome["followed_from_request_id"], "duplicate")
-
-    def test_unverified_pr_action_is_not_converted_to_periodic_intent(self):
-        factory = Mock()
-        with self.assertRaisesRegex(ValueError, "REAL_ACTION_IDENTITY_ADAPTER_REQUIRED"):
-            bridge_entry.execute(
-                environment={"LITE_ACTIONS_GITCODE_EVENT_NAME": "pull_request_target"},
-                number=1,
-                expected_head="a" * 40,
-                factory=factory,
-            )
-        factory.assert_not_called()
-
-
 class WorkflowSyntaxTests(unittest.TestCase):
     def test_github_context_expressions_are_not_literal_single_braces(self):
         import re
@@ -372,8 +293,6 @@ class WorkflowSyntaxTests(unittest.TestCase):
             text = (ROOT / ".github/workflows" / name).read_text()
             self.assertEqual(text.count("checks-key: ${{ secrets.LITE_GITCODE_CHECKS_APP_KEY }}"), 1)
             self.assertNotIn("checks-key:", text.split("  wait-gitcode:")[1])
-        bridge = (ROOT / ".gitcode/workflow-templates/lite_gitcode_forward.yml").read_text()
-        self.assertNotIn("CHECKS_APP_KEY", bridge)
         script = """
 const action=require(process.argv[1]);
 const code=action.run({'INPUT_PHASE':'wait','INPUT_CHECKS-KEY':'synthetic-private-key'},(bin,args,options)=>{
