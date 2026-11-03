@@ -1,5 +1,3 @@
-[Reading 255 lines from start (total: 255 lines, 0 remaining)]
-
 """Generate a thin personal workflow that bootstraps the pinned Lite Actions SDK."""
 
 import hashlib
@@ -255,5 +253,3 @@ if __name__ == "__main__":
     content, digest = render()
     OUTPUT.write_text(content)
     print("capture_bootstrap_script_sha256=" + digest)
-
-[executed on device: depeng_us_euler (f1ca6a21-0dcf-4acf-88a7-f96f0ffc2b10)]
