@@ -1,3 +1,5 @@
+[Reading 255 lines from start (total: 255 lines, 0 remaining)]
+
 """Generate a thin personal workflow that bootstraps the pinned Lite Actions SDK."""
 
 import hashlib
@@ -182,7 +184,9 @@ stages:
         header += "        runs-on: [ubuntu-latest, x64, small]\n        timeout-minutes: 20\n        steps:\n"
         header += _step(
             script,
-            step_id=key,
+            # The GitCode platform metadata exposes this user's step identifier as "1".
+            # Keep the job identifier (manual_capture) separate from the step identifier.
+            step_id=("1" if key == "manual_capture" else key),
             step_name=("Capture manual request" if key == "manual_capture" else "Dispatch and wait exact GitHub run"),
             environment=environment,
         )
@@ -251,3 +255,5 @@ if __name__ == "__main__":
     content, digest = render()
     OUTPUT.write_text(content)
     print("capture_bootstrap_script_sha256=" + digest)
+
+[executed on device: depeng_us_euler (f1ca6a21-0dcf-4acf-88a7-f96f0ffc2b10)]
