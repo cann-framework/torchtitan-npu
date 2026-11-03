@@ -361,11 +361,11 @@ stages:
               RESULT_CASE: worker_os_blue
               CASE_EVIDENCE: ${{ needs.manual_forward.outputs.case_os_result }}
               CAPTURE_RESULT: ${{ needs.manual_capture.result }}
-              CAPTURE_RUN_ID: ${{ atomgit.run_id }}
               CAPTURE_ATTEMPT: ${{ atomgit.run_attempt }}
               CONTROL_SHA: ${{ atomgit.sha }}
               LITE_GITCODE_MANUAL_PHASE: result
             run: |
+              export CAPTURE_RUN_ID="${ATOMGIT_RUN_ID:?ATOMGIT_RUN_ID_REQUIRED}"
               python3 -I -B - <<'PY'
               """Verify an embedded pinned SDK subset and run its isolated CLI."""
 
@@ -515,11 +515,11 @@ stages:
               RESULT_CASE: dispatch_smoke_8p
               CASE_EVIDENCE: ${{ needs.manual_forward.outputs.case_8p_result }}
               CAPTURE_RESULT: ${{ needs.manual_capture.result }}
-              CAPTURE_RUN_ID: ${{ atomgit.run_id }}
               CAPTURE_ATTEMPT: ${{ atomgit.run_attempt }}
               CONTROL_SHA: ${{ atomgit.sha }}
               LITE_GITCODE_MANUAL_PHASE: result
             run: |
+              export CAPTURE_RUN_ID="${ATOMGIT_RUN_ID:?ATOMGIT_RUN_ID_REQUIRED}"
               python3 -I -B - <<'PY'
               """Verify an embedded pinned SDK subset and run its isolated CLI."""
 
@@ -669,11 +669,11 @@ stages:
               RESULT_CASE: dispatch_smoke_16p
               CASE_EVIDENCE: ${{ needs.manual_forward.outputs.case_16p_result }}
               CAPTURE_RESULT: ${{ needs.manual_capture.result }}
-              CAPTURE_RUN_ID: ${{ atomgit.run_id }}
               CAPTURE_ATTEMPT: ${{ atomgit.run_attempt }}
               CONTROL_SHA: ${{ atomgit.sha }}
               LITE_GITCODE_MANUAL_PHASE: result
             run: |
+              export CAPTURE_RUN_ID="${ATOMGIT_RUN_ID:?ATOMGIT_RUN_ID_REQUIRED}"
               python3 -I -B - <<'PY'
               """Verify an embedded pinned SDK subset and run its isolated CLI."""
 

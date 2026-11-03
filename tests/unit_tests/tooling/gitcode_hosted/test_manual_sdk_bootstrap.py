@@ -48,7 +48,12 @@ class ManualSdkBootstrapTests(unittest.TestCase):
             },
         )
         scripts = [j["steps"][0]["run"] for j in self.jobs.values()]
-        self.assertEqual(len(set(scripts)), 1)
+        prefix = 'export CAPTURE_RUN_ID="${ATOMGIT_RUN_ID:?ATOMGIT_RUN_ID_REQUIRED}"\n'
+        for name in ("case_os_result", "case_8p_result", "case_16p_result"):
+            step = self.jobs[name]["steps"][0]
+            self.assertEqual(step["run"], prefix + self.script)
+            self.assertNotIn("CAPTURE_RUN_ID", step["env"])
+        self.assertTrue(all(script in (self.script, prefix + self.script) for script in scripts))
         self.assertTrue(all(len(j["steps"]) == 1 for j in self.jobs.values()))
         self.assertLess(len(self.script.encode()), 64000)
         self.assertEqual(hashlib.sha256(self.script.encode()).hexdigest(), self.digest)

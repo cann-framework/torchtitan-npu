@@ -205,13 +205,14 @@ stages:
             "RESULT_CASE": case_id,
             "CASE_EVIDENCE": "${{ needs.manual_forward.outputs." + output_name + " }}",
             "CAPTURE_RESULT": "${{ needs.manual_capture.result }}",
-            "CAPTURE_RUN_ID": "${{ atomgit.run_id }}",
             "CAPTURE_ATTEMPT": "${{ atomgit.run_attempt }}",
             "CONTROL_SHA": "${{ atomgit.sha }}",
             "LITE_GITCODE_MANUAL_PHASE": "result",
         }
+        # Capture binds the platform's native run ID, not the unsupported context expression.
+        result_script = 'export CAPTURE_RUN_ID="${ATOMGIT_RUN_ID:?ATOMGIT_RUN_ID_REQUIRED}"\n' + script
         header += _step(
-            script,
+            result_script,
             step_id="display_" + case_id,
             step_name=label,
             environment=environment,
