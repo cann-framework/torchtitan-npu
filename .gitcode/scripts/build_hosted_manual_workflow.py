@@ -182,7 +182,9 @@ stages:
         header += "        runs-on: [ubuntu-latest, x64, small]\n        timeout-minutes: 20\n        steps:\n"
         header += _step(
             script,
-            step_id=key,
+            # The GitCode platform metadata exposes this user's step identifier as "1".
+            # Keep the job identifier (manual_capture) separate from the step identifier.
+            step_id=("1" if key == "manual_capture" else key),
             step_name=("Capture manual request" if key == "manual_capture" else "Dispatch and wait exact GitHub run"),
             environment=environment,
         )
