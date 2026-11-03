@@ -31,7 +31,7 @@ stages:
         runs-on: [ubuntu-latest, x64, small]
         timeout-minutes: 20
         steps:
-          - id: manual_capture
+          - id: 1
             name: Capture manual request
             shell: bash
             working-directory: '.'
