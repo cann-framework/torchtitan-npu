@@ -171,6 +171,7 @@ def _wait(
             )
 
     while True:
+        delay = poll_seconds
         now = int(clock())
         if now >= expires:
             raise HostedError("HOSTED_WAITER_TIMEOUT")
@@ -199,12 +200,16 @@ def _wait(
                 raise HostedError("HOSTED_WAITER_TIMEOUT")
             if outcome["test_result"] != "PENDING":
                 return outcome
+            # A 15-second authority proof can expire between 15-second polls.
+            # Increase cadence only while awaiting that short-lived proof.
+            if outcome.get("reason") == "AWAITING_FRESH_AUTHORITY":
+                delay = min(poll_seconds, 3)
         remaining = expires - int(clock())
         if remaining > 0:
             timed(
                 "sleep",
                 poll_sequence,
-                lambda remaining=remaining: sleep(min(poll_seconds, remaining)),
+                lambda remaining=remaining, delay=delay: sleep(min(delay, remaining)),
             )
 
 

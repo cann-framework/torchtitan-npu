@@ -159,6 +159,24 @@ class HostedTests(unittest.TestCase):
         )
         self.assertEqual(self.now, 130)
 
+    def test_fresh_authority_poll_uses_short_interval_without_relaxing_proof(self):
+        loaded = Mock(verified=object())
+        reader = Mock(policy=self.policy)
+        reader.load.return_value = loaded
+        waiter = Mock(plan={"deadline": 200})
+        waiter.poll.side_effect = [
+            {"test_result": "PENDING", "reason": "AWAITING_ADMISSION"},
+            {"test_result": "PENDING", "reason": "AWAITING_FRESH_AUTHORITY"},
+            {"test_result": "PASS"},
+        ]
+        args = self.wait_args(reader)
+        delays = []
+        original_sleep = args["sleep"]
+        args["sleep"] = lambda seconds: (delays.append(seconds), original_sleep(seconds))
+        with patch.object(hosted, "GitCodeWaiter", return_value=waiter):
+            self.assertEqual(hosted.wait(**args)["test_result"], "PASS")
+        self.assertEqual(delays, [15, 3])
+
     def test_wait_timing_logs_fixed_safe_schema_and_uses_monotonic_clock(self):
         loaded = Mock(verified=object())
         reader = Mock(policy=self.policy)
