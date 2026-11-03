@@ -44,13 +44,23 @@ jobs:
       default_docker: cann_master_torchtitan_master_xyj
   result:
     name: Lite-Actions-Nightly
-    if: always() && inputs.source_provider != 'gitcode'
+    if: always() && inputs.source_provider != 'gitcode' && github.event_name != 'pull_request'
     needs: ci
     runs-on: ubuntu-latest
     steps:
       - env:
           CI_RESULT: ${{ needs.ci.result }}
-        run: test "$CI_RESULT" = success || test "$CI_RESULT" = skipped
+        run: test "$CI_RESULT" = success
+
+  plan-validation:
+    name: Lite-Actions-PR-Plan-Nightly
+    if: always() && inputs.source_provider != 'gitcode' && github.event_name == 'pull_request'
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CI_RESULT: ${{ needs.ci.result }}
+        run: test "$CI_RESULT" = success
 
   prepare-gitcode:
     name: prepare-gitcode
