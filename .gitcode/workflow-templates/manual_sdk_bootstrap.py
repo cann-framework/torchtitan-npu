@@ -5,12 +5,13 @@ import io
 import os
 import pathlib
 import re
+import signal
 import socket
 import sys
-import time
-import urllib.error
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 
 SDK_SHA = "__SDK_SHA__"
@@ -21,56 +22,100 @@ MAX_EXTRACTED = 8 * 1024 * 1024
 
 
 _PHASE_STARTED = time.monotonic()
+_TOTAL_STARTED = _PHASE_STARTED
+_DOWNLOAD_MS = 0
 _PHASE = "startup"
-_DIAGNOSTIC_CODES = frozenset({
-    "invalid_pin", "download_timeout", "http_error", "network_error",
-    "download_error", "archive_too_large", "archive_digest_mismatch",
-    "archive_format_invalid", "archive_manifest_invalid",
-    "archive_member_unsafe", "archive_member_duplicate",
-    "archive_member_unexpected", "archive_manifest_mismatch",
-    "archive_extract_limit", "archive_extract_error",
-    "sdk_entry_missing", "bootstrap_internal_error",
-})
-
+_DIAGNOSTIC_CODES = frozenset(
+    {
+        "invalid_pin",
+        "download_timeout",
+        "http_error",
+        "network_error",
+        "download_error",
+        "archive_too_large",
+        "archive_digest_mismatch",
+        "archive_format_invalid",
+        "archive_manifest_invalid",
+        "archive_member_unsafe",
+        "archive_member_duplicate",
+        "archive_member_unexpected",
+        "archive_manifest_mismatch",
+        "archive_extract_limit",
+        "archive_extract_error",
+        "sdk_entry_missing",
+        "bootstrap_internal_error",
+    }
+)
 
 
 def fail(error_code):
     code = error_code if error_code in _DIAGNOSTIC_CODES else "bootstrap_internal_error"
     elapsed_ms = max(0, int((time.monotonic() - _PHASE_STARTED) * 1000))
     print(
-        "MANUAL_SDK_BOOTSTRAP_FAILED phase=" + _PHASE
-        + " error=" + code + " elapsed_ms=" + str(elapsed_ms),
+        "MANUAL_SDK_BOOTSTRAP_FAILED phase="
+        + _PHASE
+        + " error="
+        + code
+        + " elapsed_ms="
+        + str(elapsed_ms)
+        + " download_ms="
+        + str(_DOWNLOAD_MS if _PHASE != "download" else elapsed_ms)
+        + " total_ms="
+        + str(max(0, int((time.monotonic() - _TOTAL_STARTED) * 1000))),
         file=sys.stderr,
     )
     raise SystemExit(1)
 
 
+class DownloadDeadline(BaseException):
+    pass
+
+
+def download(request):
+    # Socket timeout is per operation, so enforce a separate wall-clock deadline.
+    def deadline_handler(_signum, _frame):
+        raise DownloadDeadline()
+
+    previous = signal.signal(signal.SIGALRM, deadline_handler)
+    signal.setitimer(signal.ITIMER_REAL, 65)
+    try:
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return response.read(MAX_ARCHIVE + 1)
+            except urllib.error.HTTPError as exc:
+                code, retryable = "http_error", exc.code in (429, 500, 502, 503, 504)
+            except TimeoutError:
+                code, retryable = "download_timeout", True
+            except urllib.error.URLError as exc:
+                code = "download_timeout" if isinstance(exc.reason, (TimeoutError, socket.timeout)) else "network_error"
+                retryable = isinstance(
+                    exc.reason, (TimeoutError, socket.timeout, ConnectionResetError, ConnectionAbortedError)
+                )
+            except (ConnectionResetError, ConnectionAbortedError):
+                code, retryable = "network_error", True
+            except Exception:
+                code, retryable = "download_error", False
+            if not retryable or attempt == 1:
+                fail(code)
+    except DownloadDeadline:
+        fail("download_timeout")
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def main():
-    if not re.fullmatch(r"[0-9a-f]{40}", SDK_SHA) or not re.fullmatch(
-        r"[0-9a-f]{64}", ARCHIVE_SHA256
-    ):
+    if not re.fullmatch(r"[0-9a-f]{40}", SDK_SHA) or not re.fullmatch(r"[0-9a-f]{64}", ARCHIVE_SHA256):
         fail("invalid_pin")
-    global _PHASE, _PHASE_STARTED
+    global _PHASE, _PHASE_STARTED, _DOWNLOAD_MS
     _PHASE = "download"
     _PHASE_STARTED = time.monotonic()
     url = "https://github.com/depeng1994/lite-actions/archive/" + SDK_SHA + ".tar.gz"
     try:
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "lite-actions-manual-bootstrap"}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=25) as response:
-                archive = response.read(MAX_ARCHIVE + 1)
-        except urllib.error.HTTPError:
-            fail("http_error")
-        except (TimeoutError, socket.timeout):
-            fail("download_timeout")
-        except urllib.error.URLError as exc:
-            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
-                fail("download_timeout")
-            fail("network_error")
-        except Exception:
-            fail("download_error")
+        request = urllib.request.Request(url, headers={"User-Agent": "lite-actions-manual-bootstrap"})
+        archive = download(request)
+        _DOWNLOAD_MS = max(0, int((time.monotonic() - _PHASE_STARTED) * 1000))
         _PHASE = "archive"
         _PHASE_STARTED = time.monotonic()
         if len(archive) > MAX_ARCHIVE:
@@ -178,7 +223,14 @@ def main():
                 fail("sdk_entry_missing")
             if os.environ.get("LITE_GITCODE_BOOTSTRAP_DIAGNOSTIC_ONLY") == "1":
                 elapsed_ms = max(0, int((time.monotonic() - _PHASE_STARTED) * 1000))
-                print("MANUAL_SDK_BOOTSTRAP_OK phase=sdk_entry elapsed_ms=" + str(elapsed_ms))
+                print(
+                    "MANUAL_SDK_BOOTSTRAP_OK phase=sdk_entry elapsed_ms="
+                    + str(elapsed_ms)
+                    + " download_ms="
+                    + str(_DOWNLOAD_MS)
+                    + " total_ms="
+                    + str(max(0, int((time.monotonic() - _TOTAL_STARTED) * 1000)))
+                )
                 raise SystemExit(0)
             sys.path.insert(0, str(root))
             from ci_core.gitcode_manual.cli import main as sdk_main

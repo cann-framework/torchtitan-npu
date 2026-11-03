@@ -4,10 +4,13 @@ import contextlib
 import hashlib
 import io
 import os
+import signal
 import subprocess
 import sys
 import tarfile
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -41,7 +44,7 @@ class ManualSdkBootstrapTests(unittest.TestCase):
         self.assertRegex(builder.SDK_ARCHIVE_SHA256, r"^[0-9a-f]{64}$")
         scripts = [job["steps"][0]["run"] for job in self.jobs.values()]
         self.assertEqual(len(set(scripts)), 1)
-        self.assertLess(len(scripts[0].encode()), 8192)
+        self.assertLess(len(scripts[0].encode()), 16384)
         self.assertEqual(hashlib.sha256(scripts[0].encode()).hexdigest(), self.capture_sha)
         self.assertEqual(
             self.jobs["manual_forward"]["steps"][0]["env"]["LITE_GITCODE_CAPTURE_SCRIPT_SHA256"],
@@ -135,7 +138,11 @@ class ManualSdkBootstrapTests(unittest.TestCase):
         code, stdout, stderr = self._run_synthetic_archive(members, expected)
         self.assertEqual(code, 1)
         self.assertEqual(stdout, "")
-        self.assertEqual(stderr.strip(), "MANUAL_SDK_BOOTSTRAP_FAILED")
+        self.assertRegex(
+            stderr.strip(),
+            r"^MANUAL_SDK_BOOTSTRAP_FAILED phase=manifest error=archive_member_duplicate "
+            r"elapsed_ms=\d+ download_ms=\d+ total_ms=\d+$",
+        )
 
     def test_file_directory_prefix_collision_is_rejected(self):
         expected = {"__init__.py", "gitcode_manual", "gitcode_manual/cli.py"}
@@ -147,7 +154,11 @@ class ManualSdkBootstrapTests(unittest.TestCase):
         code, stdout, stderr = self._run_synthetic_archive(members, expected)
         self.assertEqual(code, 1)
         self.assertEqual(stdout, "")
-        self.assertEqual(stderr.strip(), "MANUAL_SDK_BOOTSTRAP_FAILED")
+        self.assertRegex(
+            stderr.strip(),
+            r"^MANUAL_SDK_BOOTSTRAP_FAILED phase=manifest error=archive_manifest_invalid "
+            r"elapsed_ms=\d+ download_ms=\d+ total_ms=\d+$",
+        )
 
     def test_missing_or_unexpected_sdk_file_is_rejected(self):
         expected = {"__init__.py", "gitcode_manual/__init__.py", "gitcode_manual/cli.py"}
@@ -160,7 +171,60 @@ class ManualSdkBootstrapTests(unittest.TestCase):
         code, stdout, stderr = self._run_synthetic_archive(members, expected)
         self.assertEqual(code, 1)
         self.assertEqual(stdout, "")
-        self.assertEqual(stderr.strip(), "MANUAL_SDK_BOOTSTRAP_FAILED")
+        self.assertRegex(
+            stderr.strip(),
+            r"^MANUAL_SDK_BOOTSTRAP_FAILED phase=manifest error=archive_member_unexpected "
+            r"elapsed_ms=\d+ download_ms=\d+ total_ms=\d+$",
+        )
+
+    def test_download_retries_timeout_and_returns_archive(self):
+        source = (ROOT / ".gitcode/workflow-templates/manual_sdk_bootstrap.py").read_text()
+        source = source.replace("__EXPECTED_FILES__", "()")
+        namespace = {"__name__": "bootstrap_test"}
+        exec(compile(source, "manual_sdk_bootstrap.py", "exec"), namespace)
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"archive"
+        with patch("urllib.request.urlopen", side_effect=[TimeoutError(), response]) as opener:
+            result = namespace["download"](urllib.request.Request("https://example.com"))
+        self.assertEqual(result, b"archive")
+        self.assertEqual(opener.call_count, 2)
+
+    def test_download_does_not_retry_permanent_http_error(self):
+        source = (ROOT / ".gitcode/workflow-templates/manual_sdk_bootstrap.py").read_text()
+        source = source.replace("__EXPECTED_FILES__", "()")
+        namespace = {"__name__": "bootstrap_test"}
+        exec(compile(source, "manual_sdk_bootstrap.py", "exec"), namespace)
+        failure = urllib.error.HTTPError("https://example.com", 404, "missing", {}, None)
+        stderr = io.StringIO()
+        with (
+            patch("urllib.request.urlopen", side_effect=failure) as opener,
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit),
+        ):
+            namespace["download"](urllib.request.Request("https://example.com"))
+        self.assertEqual(opener.call_count, 1)
+        self.assertIn("error=http_error", stderr.getvalue())
+
+    def test_download_deadline_stops_blocked_operation(self):
+        source = (ROOT / ".gitcode/workflow-templates/manual_sdk_bootstrap.py").read_text()
+        namespace = {"__name__": "bootstrap_test"}
+        exec(compile(source.replace("__EXPECTED_FILES__", "()"), "manual_sdk_bootstrap.py", "exec"), namespace)
+
+        def blocked(*_args, **_kwargs):
+            os.kill(os.getpid(), signal.SIGALRM)
+
+        before = signal.getsignal(signal.SIGALRM)
+        stderr = io.StringIO()
+        with (
+            patch("urllib.request.urlopen", side_effect=blocked) as opener,
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit),
+        ):
+            namespace["download"](urllib.request.Request("https://example.com"))
+        self.assertEqual(opener.call_count, 1)
+        self.assertIn("error=download_timeout", stderr.getvalue())
+        self.assertEqual(signal.getsignal(signal.SIGALRM), before)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
 
     def test_real_isolated_sdk_archive_bootstrap_executes_aggregate_without_credentials(self):
         workflow = ROOT / ".gitcode/workflows/torchtitan_forward_manual.yml"
