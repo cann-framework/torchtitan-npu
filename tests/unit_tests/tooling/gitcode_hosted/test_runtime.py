@@ -81,8 +81,8 @@ class RuntimeTests(unittest.TestCase):
             "https://example.invalid/token-secret", 403, "token-secret", {}, None
         )
         self.assertEqual(
-            runtime.safe_failure(error, "wait"),
-            {"phase": "wait", "stage": "HOSTED", "code": "UNCLASSIFIED",
+            runtime.safe_failure(error, "prepare"),
+            {"phase": "prepare", "stage": "HOSTED", "code": "UNCLASSIFIED",
              "error_type": "HTTPError", "http_status": 403},
         )
         error = KeyError("token-secret")

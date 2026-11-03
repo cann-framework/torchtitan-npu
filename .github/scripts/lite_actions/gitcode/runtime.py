@@ -218,7 +218,7 @@ def safe_failure(error, phase):
         "stage": "SOURCE" if source else "HOSTED",
         "code": code,
     }
-    if phase == "wait" and not source:
+    if phase in {"prepare", "wait"} and not source:
         # Only fixed labels are exposed: exception messages and API bodies may
         # contain credentials or untrusted data and must remain private.
         allowed = {
