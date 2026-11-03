@@ -8,7 +8,7 @@ TEMPLATE = ROOT / ".gitcode/workflow-templates/manual_sdk_bootstrap.py"
 OUTPUT = ROOT / ".gitcode/workflows/torchtitan_forward_manual.yml"
 
 # Updated only from a reviewed immutable SDK Git object.
-SDK_SHA = "035767c23ea15501d515de37fcd515d98b72d906"
+SDK_SHA = "3ec10e5560f8c81f6c718cd0febb8855f8bc9647"
 BUNDLE_SHA256 = "bd27f337638cd52a85b7474c159d7da4333602e23365aee12a481ae5c77f0577"
 RAW_SHA256 = "902da91808b5a39125276045ad0fc744444ffc7b0c7a9a0f9e89a72efe0475f7"
 BUNDLE = ROOT / ".gitcode/workflow-templates/manual_sdk_bundle.b64"
