@@ -1,4 +1,4 @@
-[Reading 64 lines from start (total: 64 lines, 0 remaining)]
+[Reading 65 lines from start (total: 65 lines, 0 remaining)]
 
 # Copyright (c) 2026 Huawei Technologies Co., Ltd. All rights reserved.
 # Licensed under the BSD-style license found in the LICENSE file.
@@ -42,6 +42,7 @@ class GitCodeManualCaptureStepContractTests(unittest.TestCase):
     def test_generated_step_identifier_matches_real_platform_metadata_fixture(self):
         step = self.jobs["manual_capture"]["steps"][0]
         platform_step = self.user_steps[0]
+        self.assertEqual(step["id"], "1")  # SDK common.CAPTURE_STEP for pinned be1a37d.
         self.assertEqual(step["id"], platform_step["identifier"])
         self.assertEqual(step["name"], platform_step["name"])
         self.assertEqual(platform_step["sequence"], 1)
