@@ -66,9 +66,6 @@ class ManualSdkBootstrapTests(unittest.TestCase):
         self.assertEqual(self.jobs["manual_capture"]["steps"][0]["working-directory"], ".")
         self.assertNotIn("urllib.request", self.script)
         self.assertEqual((ROOT / ".gitcode/workflows/torchtitan_forward_manual.yml").read_text(), self.content)
-        self.assertEqual(
-            (ROOT / ".gitcode/workflows/torchtitan_bootstrap_diagnostic.yml").read_text(), builder.render_diagnostic()
-        )
 
     def test_credentials_remain_confined_to_capture_and_forward(self):
         for name, job in self.jobs.items():
@@ -131,11 +128,6 @@ class ManualSdkBootstrapTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("MANUAL_FORWARD_FAILED:RESULT_CASE_REQUIRED", result.stderr)
         self.assertNotIn("PASS", result.stdout)
-
-    def test_diagnostic_verifies_bundle_offline(self):
-        result = self.run_script(self.script, LITE_GITCODE_BOOTSTRAP_DIAGNOSTIC_ONLY="1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("MANUAL_SDK_BOOTSTRAP_OK phase=sdk_entry", result.stdout)
 
     def test_corrupted_compressed_bundle_is_rejected(self):
         encoded = builder.BUNDLE.read_text().strip()

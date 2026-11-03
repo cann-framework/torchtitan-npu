@@ -17,7 +17,8 @@ def test_organization_schema3_workflow_call_remains_separate_from_gitcode_jobs()
         assert native["uses"] == "./.github/workflows/lite_actions_common.yml"
         assert native["with"]["workflow"] == name
         assert native["if"] == "inputs.source_provider != 'gitcode'"
-        assert workflow["jobs"]["result"]["if"] == "always() && inputs.source_provider != 'gitcode'"
+        assert workflow["jobs"]["result"]["if"] == "always() && inputs.source_provider != 'gitcode' && github.event_name != 'pull_request'"
+        assert workflow["jobs"]["plan-validation"]["if"] == "always() && inputs.source_provider != 'gitcode' && github.event_name == 'pull_request'"
         assert workflow["jobs"]["prepare-gitcode"]["name"] == "prepare-gitcode"
         assert workflow["jobs"]["wait-gitcode"]["needs"] == "prepare-gitcode"
 
