@@ -9,9 +9,9 @@ OUTPUT = ROOT / ".gitcode/workflows/torchtitan_forward_manual.yml"
 DIAGNOSTIC_OUTPUT = ROOT / ".gitcode/workflows/torchtitan_bootstrap_diagnostic.yml"
 
 # Updated only from a reviewed immutable SDK Git object.
-SDK_SHA = "be1a37d67a977dbee9c7bb1ef13f445a438e20ec"
-BUNDLE_SHA256 = "831a2bc02d17f7f763f3a30138621b817215beed0bb8bd3cf12de92f8f8d6e1f"
-RAW_SHA256 = "99bce4a5a4278bf2fb3fa89daa6e38f28e6510ace5069b785195a907a8483a44"
+SDK_SHA = "b19d6ba11f03795fb42c8d9301f9c39900c73150"
+BUNDLE_SHA256 = "16e359b7654ddb1453bf9753fbfa0c683009aac297571f2b9abd11470d11fffc"
+RAW_SHA256 = "7067ab47284c38674dc45fefd81351d9ad5f595f1294a0a90a9819a9cecd8c4a"
 BUNDLE = ROOT / ".gitcode/workflow-templates/manual_sdk_bundle.b64"
 SDK_FILES = (
     "ci_core/__init__.py",

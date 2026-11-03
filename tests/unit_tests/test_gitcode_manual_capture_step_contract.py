@@ -40,7 +40,7 @@ class GitCodeManualCaptureStepContractTests(unittest.TestCase):
     def test_generated_step_identifier_matches_real_platform_metadata_fixture(self):
         step = self.jobs["manual_capture"]["steps"][0]
         platform_step = self.user_steps[0]
-        self.assertEqual(step["id"], "1")  # SDK common.CAPTURE_STEP for pinned be1a37d.
+        self.assertEqual(step["id"], "1")  # SDK common.CAPTURE_STEP for the pinned SDK.
         self.assertEqual(step["id"], platform_step["identifier"])
         self.assertEqual(step["name"], platform_step["name"])
         self.assertEqual(platform_step["sequence"], 1)
@@ -57,7 +57,7 @@ class GitCodeManualCaptureStepContractTests(unittest.TestCase):
         self.assertEqual(forward["env"]["LITE_GITCODE_CAPTURE_SCRIPT_SHA256"], script_sha)
         self.assertEqual(
             script_sha,
-            "8eb518a2fc3708de3f8e41015fb952d68f3b767754e699eb1697c33df5ab442d",
+            "98841793f219cfeec9b086b0b337f6db151fc31becdb3216135a8b8ce7145b71",
         )
 
 
