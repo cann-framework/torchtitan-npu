@@ -55,6 +55,7 @@ jobs:
           CI_DEFAULT_DOCKER: ${{ inputs.default_docker }}
         run: PYTHONPATH="$PWD" python3 .github/scripts/lite_actions/prepare_request.py
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: lite-ci-request-${{ github.run_attempt }}
           path: .ci-request/ci-request.json
