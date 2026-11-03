@@ -42,7 +42,7 @@ stages:
               REPOSITORY_ID: ${{ atomgit.repository_id }}
               REF: ${{ atomgit.ref }}
               ACTOR: ${{ atomgit.actor }}
-              CONTROL_SHA: ${{ vars.LITE_GITCODE_BRIDGE_SHA }}
+              CONTROL_SHA: ${{ atomgit.sha }}
               ATOMGIT_TOKEN: ${{ atomgit.token }}
               PR_NUMBER: ${{ inputs.pr_number }}
               TEST_CASE: ${{ inputs.test_case }}
@@ -320,7 +320,7 @@ stages:
               REPOSITORY_ID: ${{ atomgit.repository_id }}
               REF: ${{ atomgit.ref }}
               ACTOR: ${{ atomgit.actor }}
-              CONTROL_SHA: ${{ vars.LITE_GITCODE_BRIDGE_SHA }}
+              CONTROL_SHA: ${{ atomgit.sha }}
               ATOMGIT_TOKEN: ${{ atomgit.token }}
               LITE_ACTIONS_GITHUB_TOKEN: ${{ secrets.LITE_ACTIONS_GITHUB_TOKEN }}
               LITE_GITCODE_CAPTURE_SCRIPT_SHA256: 0d97668fde6b423aac55d39e4d88a9a3c354e0209488aa072cea008a14882285
@@ -591,7 +591,7 @@ stages:
               CAPTURE_RESULT: ${{ needs.manual_capture.result }}
               CAPTURE_RUN_ID: ${{ atomgit.run_id }}
               CAPTURE_ATTEMPT: ${{ atomgit.run_attempt }}
-              CONTROL_SHA: ${{ vars.LITE_GITCODE_BRIDGE_SHA }}
+              CONTROL_SHA: ${{ atomgit.sha }}
               LITE_GITCODE_MANUAL_PHASE: result
             run: |
               python3 -I -B - <<'PY'
@@ -859,7 +859,7 @@ stages:
               CAPTURE_RESULT: ${{ needs.manual_capture.result }}
               CAPTURE_RUN_ID: ${{ atomgit.run_id }}
               CAPTURE_ATTEMPT: ${{ atomgit.run_attempt }}
-              CONTROL_SHA: ${{ vars.LITE_GITCODE_BRIDGE_SHA }}
+              CONTROL_SHA: ${{ atomgit.sha }}
               LITE_GITCODE_MANUAL_PHASE: result
             run: |
               python3 -I -B - <<'PY'
@@ -1127,7 +1127,7 @@ stages:
               CAPTURE_RESULT: ${{ needs.manual_capture.result }}
               CAPTURE_RUN_ID: ${{ atomgit.run_id }}
               CAPTURE_ATTEMPT: ${{ atomgit.run_attempt }}
-              CONTROL_SHA: ${{ vars.LITE_GITCODE_BRIDGE_SHA }}
+              CONTROL_SHA: ${{ atomgit.sha }}
               LITE_GITCODE_MANUAL_PHASE: result
             run: |
               python3 -I -B - <<'PY'

@@ -166,7 +166,7 @@ stages:
         "REPOSITORY_ID": "${{ atomgit.repository_id }}",
         "REF": "${{ atomgit.ref }}",
         "ACTOR": "${{ atomgit.actor }}",
-        "CONTROL_SHA": "${{ vars.LITE_GITCODE_BRIDGE_SHA }}",
+        "CONTROL_SHA": "${{ atomgit.sha }}",
         "ATOMGIT_TOKEN": "${{ atomgit.token }}",
     }
     jobs = [
@@ -241,7 +241,7 @@ stages:
             "CAPTURE_RESULT": "${{ needs.manual_capture.result }}",
             "CAPTURE_RUN_ID": "${{ atomgit.run_id }}",
             "CAPTURE_ATTEMPT": "${{ atomgit.run_attempt }}",
-            "CONTROL_SHA": "${{ vars.LITE_GITCODE_BRIDGE_SHA }}",
+            "CONTROL_SHA": "${{ atomgit.sha }}",
             "LITE_GITCODE_MANUAL_PHASE": "result",
         }
         header += _step(

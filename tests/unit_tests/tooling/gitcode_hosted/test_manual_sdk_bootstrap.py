@@ -69,6 +69,10 @@ class ManualSdkBootstrapTests(unittest.TestCase):
             self.assertNotIn("ATOMGIT_TOKEN", env)
             self.assertNotIn("LITE_ACTIONS_GITHUB_TOKEN", env)
 
+    def test_manual_jobs_use_run_sha_as_control_identity(self):
+        for name in ("manual_capture", "manual_forward", "case_os_result", "case_8p_result", "case_16p_result"):
+            self.assertEqual(self.jobs[name]["steps"][0]["env"]["CONTROL_SHA"], "${{ atomgit.sha }}")
+
     def test_workflow_keeps_os_only_default_and_explicit_three_case_choice(self):
         inputs = self.document["on"]["workflow_dispatch"]["inputs"]
         self.assertEqual(inputs["test_case"]["default"], "worker_os_blue")
