@@ -5,7 +5,10 @@ import io
 import os
 import pathlib
 import re
+import socket
 import sys
+import time
+import urllib.error
 import tarfile
 import tempfile
 import urllib.request
@@ -17,8 +20,28 @@ MAX_ARCHIVE = 4 * 1024 * 1024
 MAX_EXTRACTED = 8 * 1024 * 1024
 
 
-def fail():
-    print("MANUAL_SDK_BOOTSTRAP_FAILED", file=sys.stderr)
+_PHASE_STARTED = time.monotonic()
+_PHASE = "startup"
+_DIAGNOSTIC_CODES = frozenset({
+    "invalid_pin", "download_timeout", "http_error", "network_error",
+    "download_error", "archive_too_large", "archive_digest_mismatch",
+    "archive_format_invalid", "archive_manifest_invalid",
+    "archive_member_unsafe", "archive_member_duplicate",
+    "archive_member_unexpected", "archive_manifest_mismatch",
+    "archive_extract_limit", "archive_extract_error",
+    "sdk_entry_missing", "bootstrap_internal_error",
+})
+
+
+
+def fail(error_code):
+    code = error_code if error_code in _DIAGNOSTIC_CODES else "bootstrap_internal_error"
+    elapsed_ms = max(0, int((time.monotonic() - _PHASE_STARTED) * 1000))
+    print(
+        "MANUAL_SDK_BOOTSTRAP_FAILED phase=" + _PHASE
+        + " error=" + code + " elapsed_ms=" + str(elapsed_ms),
+        file=sys.stderr,
+    )
     raise SystemExit(1)
 
 
@@ -26,23 +49,48 @@ def main():
     if not re.fullmatch(r"[0-9a-f]{40}", SDK_SHA) or not re.fullmatch(
         r"[0-9a-f]{64}", ARCHIVE_SHA256
     ):
-        fail()
+        fail("invalid_pin")
+    global _PHASE, _PHASE_STARTED
+    _PHASE = "download"
+    _PHASE_STARTED = time.monotonic()
     url = "https://github.com/depeng1994/lite-actions/archive/" + SDK_SHA + ".tar.gz"
     try:
         request = urllib.request.Request(
             url, headers={"User-Agent": "lite-actions-manual-bootstrap"}
         )
-        with urllib.request.urlopen(request, timeout=25) as response:
-            archive = response.read(MAX_ARCHIVE + 1)
-        if len(archive) > MAX_ARCHIVE or hashlib.sha256(archive).hexdigest() != ARCHIVE_SHA256:
-            fail()
-        prefix = "lite-actions-" + SDK_SHA + "/ci_core/"
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                archive = response.read(MAX_ARCHIVE + 1)
+        except urllib.error.HTTPError:
+            fail("http_error")
+        except (TimeoutError, socket.timeout):
+            fail("download_timeout")
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                fail("download_timeout")
+            fail("network_error")
+        except Exception:
+            fail("download_error")
+        _PHASE = "archive"
+        _PHASE_STARTED = time.monotonic()
+        if len(archive) > MAX_ARCHIVE:
+            fail("archive_too_large")
+        if hashlib.sha256(archive).hexdigest() != ARCHIVE_SHA256:
+            fail("archive_digest_mismatch")
         with tempfile.TemporaryDirectory(prefix="lite-gitcode-sdk-") as temporary:
             root = pathlib.Path(temporary)
             prefix = "lite-actions-" + SDK_SHA + "/ci_core/"
             extracted = 0
-            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
+            try:
+                bundle = tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz")
                 members = bundle.getmembers()
+            except (tarfile.TarError, EOFError):
+                fail("archive_format_invalid")
+            except Exception:
+                fail("bootstrap_internal_error")
+            _PHASE = "manifest"
+            _PHASE_STARTED = time.monotonic()
+            with bundle:
                 files = {}
                 directories = set()
                 seen = set()
@@ -68,10 +116,10 @@ def main():
                         or member.islnk()
                         or member.isdev()
                     ):
-                        fail()
+                        fail("archive_member_unsafe")
                     if name.rstrip("/") == prefix.rstrip("/"):
                         if "__CI_CORE_ROOT__" in seen:
-                            fail()
+                            fail("archive_member_duplicate")
                         seen.add("__CI_CORE_ROOT__")
                         continue
                     if not name.startswith(prefix):
@@ -85,36 +133,38 @@ def main():
                         or any(part in ("", ".", "..") for part in relative.parts)
                         or normalized in seen
                     ):
-                        fail()
+                        fail("archive_member_duplicate")
                     seen.add(normalized)
                     if member.isdir():
                         if normalized not in allowed_dirs:
-                            fail()
+                            fail("archive_manifest_invalid")
                         directories.add(normalized)
                         continue
                     if not member.isfile() or normalized not in EXPECTED_FILES or member.size < 0:
-                        fail()
+                        fail("archive_member_unexpected")
                     files[normalized] = member
                 if set(files) != EXPECTED_FILES:
-                    fail()
+                    fail("archive_manifest_mismatch")
                 for name in files:
                     parents = pathlib.PurePosixPath(name).parents
                     if any(parent.as_posix() in files for parent in parents):
-                        fail()
+                        fail("archive_manifest_invalid")
                 if any(name in files for name in directories):
-                    fail()
+                    fail("archive_manifest_invalid")
+                _PHASE = "extract"
+                _PHASE_STARTED = time.monotonic()
                 for name, member in files.items():
                     extracted += member.size
                     if extracted > MAX_EXTRACTED:
-                        fail()
+                        fail("archive_extract_limit")
                     target = root / "ci_core" / pathlib.PurePosixPath(name)
                     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                     source = bundle.extractfile(member)
                     if source is None:
-                        fail()
+                        fail("archive_extract_error")
                     payload = source.read(member.size + 1)
                     if len(payload) != member.size:
-                        fail()
+                        fail("archive_extract_error")
                     descriptor = os.open(
                         target,
                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
@@ -122,8 +172,14 @@ def main():
                     )
                     with os.fdopen(descriptor, "wb") as output:
                         output.write(payload)
+            _PHASE = "sdk_entry"
+            _PHASE_STARTED = time.monotonic()
             if not (root / "ci_core" / "gitcode_manual" / "cli.py").is_file():
-                fail()
+                fail("sdk_entry_missing")
+            if os.environ.get("LITE_GITCODE_BOOTSTRAP_DIAGNOSTIC_ONLY") == "1":
+                elapsed_ms = max(0, int((time.monotonic() - _PHASE_STARTED) * 1000))
+                print("MANUAL_SDK_BOOTSTRAP_OK phase=sdk_entry elapsed_ms=" + str(elapsed_ms))
+                raise SystemExit(0)
             sys.path.insert(0, str(root))
             from ci_core.gitcode_manual.cli import main as sdk_main
 
@@ -131,7 +187,8 @@ def main():
     except SystemExit:
         raise
     except Exception:
-        fail()
+        fail("bootstrap_internal_error")
 
 
-main()
+if __name__ == "__main__":
+    main()
