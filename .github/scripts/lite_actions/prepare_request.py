@@ -35,12 +35,12 @@ def expand_cases(selectors: list[dict], defaults: dict) -> list[dict]:
 
     catalogue = catalog()
     expanded = []
-    seen = set()
+    seen = {}
     for selector in selectors:
         for test in select(catalogue, **selector):
-            if test.test_name in seen:
+            if test.test_name in seen and (test.ci_kind != "npu_smoke" or seen[test.test_name] != "npu_smoke"):
                 raise ValueError("duplicate expanded Test Case")
-            seen.add(test.test_name)
+            seen[test.test_name] = test.ci_kind
             expanded.append(normalize(test, defaults, len(expanded)))
     return expanded
 

@@ -6,13 +6,16 @@
 
 """Lite Actions adapter: trusted case definitions and fixed SHA selectors."""
 from __future__ import annotations
+
 import argparse
 import importlib
 import json
 import os
-from pathlib import Path
 import pkgutil
 import re
+from pathlib import Path
+
+from tests.integration_tests.nightly_all_models_test.smoke_catalog import build_smoke_list, load_smoke_catalog
 
 PACKAGE="tests.integration_tests.nightly_all_models_test"
 SAFE=re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
@@ -35,13 +38,32 @@ def catalog() -> dict[str,list]:
         found[info.name]=tests
     return found
 
-def select(catalogue:dict, *,test_id:str|None=None,suite:str|None=None):
-    if (test_id is None)==(suite is None):raise ValueError('select exactly one ID or suite')
+def select(catalogue: dict, *, test_id: str | None = None, suite: str | None = None):
+    if (test_id is None) == (suite is None):
+        raise ValueError('select exactly one ID or suite')
     if suite is not None:
-        if suite not in catalogue:raise ValueError('unknown CI suite')
-        return catalogue[suite]
-    matches=[x for group in catalogue.values() for x in group if x.test_name==test_id]
-    if len(matches)!=1:raise ValueError('unknown or duplicated CI test')
+        if suite in catalogue:
+            return catalogue[suite]
+        profiles = load_smoke_catalog()['profiles']
+        if suite not in profiles:
+            raise ValueError('unknown CI suite')
+        smoke = {test.test_name: test for test in build_smoke_list()}
+        selected = [smoke[name] for name in profiles[suite]]
+        # A new smoke case can be selected directly from the manifest without
+        # adding another Python suite. Reject a collision with a training ID.
+        for test in selected:
+            registered = [item for group in catalogue.values() for item in group if item.test_name == test.test_name]
+            if registered and registered != [test]:
+                raise ValueError('duplicated CI test')
+        return selected
+    matches = [x for group in catalogue.values() for x in group if x.test_name == test_id]
+    smoke = [x for x in build_smoke_list() if x.test_name == test_id]
+    if smoke:
+        if matches and matches != smoke:
+            raise ValueError('unknown or duplicated CI test')
+        return smoke
+    if len(matches) != 1:
+        raise ValueError('unknown or duplicated CI test')
     return matches
 
 def main():

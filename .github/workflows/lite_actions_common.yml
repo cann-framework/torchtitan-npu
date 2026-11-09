@@ -16,6 +16,9 @@ on:
       test_cases:
         type: string
         default: ""
+      show_case_id:
+        type: boolean
+        default: false
       default_worker:
         required: true
         type: string
@@ -66,7 +69,7 @@ jobs:
     # dispatches NPU work. Hardware cases require an explicit workflow_dispatch.
     if: github.event_name != 'pull_request'
     needs: prepare
-    name: ${{ matrix.test_id }}
+    name: ${{ inputs.show_case_id && matrix.case_id || matrix.test_id }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:

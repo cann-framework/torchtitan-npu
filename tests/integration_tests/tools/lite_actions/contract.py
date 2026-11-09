@@ -149,13 +149,15 @@ def parse_plan(plan, run, workflow):
     items = plan["cases"]
     if not isinstance(items, list) or not 1 <= len(items) <= 256:
         raise ValueError("invalid case count")
-    seen = set()
+    seen = {}
     for index, case in enumerate(items):
         if not isinstance(case, dict) or set(case) != CASE_KEYS:
             raise ValueError("invalid case structure")
-        if not isinstance(case["test_id"], str) or not TEST.fullmatch(case["test_id"]) or case["test_id"] in seen:
+        if not isinstance(case["test_id"], str) or not TEST.fullmatch(case["test_id"]):
             raise ValueError("duplicate/invalid test")
-        seen.add(case["test_id"])
+        if case["test_id"] in seen and (case["kind"] != "npu_smoke" or seen[case["test_id"]] != "npu_smoke"):
+            raise ValueError("duplicate/invalid test")
+        seen[case["test_id"]] = case["kind"]
         if (
             case["order"] != index
             or type(case["order"]) is not int

@@ -37,8 +37,10 @@ jobs:
     uses: ./.github/workflows/lite_actions_common.yml
     with:
       workflow: lite_actions_dispatcher_smoke.yml
-      default_cases: '[{"test_id":"worker_os_blue"},{"suite":"a3_8p_smoke_tests"},{"suite":"a3_16p_smoke_tests"}]'
+      default_cases: '[{"suite":"github_smoke"}]'
       test_cases: ${{ inputs.test_cases }}
+      # This profile is an explicit manual pilot on ci/* branches only.
+      show_case_id: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/ci/') && inputs.test_cases == '[{"suite":"fifo_smoke"}]' }}
       default_worker: blue
       default_target_pool: a3_shared_blue
       default_docker: cann_master_torchtitan_master_xyj

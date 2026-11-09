@@ -3,20 +3,11 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Fast 16P distributed-launch smoke; intentionally does not load DSV4 weights."""
-from tests.integration_tests import OverrideDefinitions
+"""Adapter for the shared model-owned smoke catalog."""
+
+from tests.integration_tests.nightly_all_models_test.smoke_catalog import build_smoke_list, load_smoke_catalog
 
 
-def build_test_list() -> list[OverrideDefinitions]:
-    return [OverrideDefinitions(
-        ci_kind="npu_smoke",
-        test_name="dispatch_smoke_16p",
-        test_descr="Lite Actions dispatch smoke: two-node 16P HCCL/DP handshake",
-        ngpu=8,
-        nnodes=2,
-        env_vars={
-            "ASCEND_SET_ENV_PATH": "/usr/local/Ascend/ascend-toolkit/set_env.sh",
-        },
-        check_loss=False,
-        timeout=75,
-    )]
+def build_test_list():
+    tests = {test.test_name: test for test in build_smoke_list()}
+    return [tests[name] for name in load_smoke_catalog()["profiles"]["a3_16p_smoke_tests"]]
