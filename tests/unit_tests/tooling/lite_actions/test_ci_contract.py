@@ -199,10 +199,11 @@ class CIContract(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "re-run all jobs"):
                 self.waiter.main()
 
-    def test_waiter_skips_nonobject_json_and_still_finds_valid_result(self):
+    def test_waiter_rejects_invalid_comment_even_with_valid_result(self):
         result, args, comment = self.result_fixture()
         for invalid in [None, [], 0, {**result, "status": []}]:
-            self.assertEqual(self.waiter.find_result([comment(result), comment(invalid)], **args), result)
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "invalid case result"):
+                self.waiter.find_result([comment(result), comment(invalid)], **args)
 
     def test_waiter_rejects_utf8_and_escaped_request_over_budget(self):
         result, args, comment = self.result_fixture()

@@ -137,7 +137,38 @@ def test_repeated_smoke_results_cannot_be_swapped():
     assert waiter.find_result([comment], **args) is None
     result["case_id"] = first["case_id"]
     comment["body"] = marker + json.dumps(result)
+    valid = dict(comment)
     assert waiter.find_result([comment], **args) == result
+    failure = {"user": {"login": "reporter"}, "body": marker + json.dumps({**result, "status": "FAIL", "exit_code": 1})}
+    for comments in ([comment, failure], [failure, comment]):
+        with pytest.raises(ValueError, match="conflicting"):
+            waiter.find_result(comments, **args)
+    assert waiter.find_result([comment, comment], **args) == result
+    assert waiter.find_result([comment, {**failure, "user": {"login": "other"}}], **args) == result
+    other_run = {**failure, "body": failure["body"].replace("Lite-CI-V3 7:1:", "Lite-CI-V3 8:1:", 1)}
+    assert waiter.find_result([comment, other_run], **args) == result
+    for mismatch in (
+        {"attempt": True},
+        {"resources": {**first["resources"], "nodes": True}},
+        {"sha": "c" * 40},
+        {"status": "UNKNOWN"},
+        {"cleanup_verified": False},
+    ):
+        comment["body"] = marker + json.dumps({**result, **mismatch})
+        assert waiter.find_result([comment], **args) is None
+        for comments in ([valid, comment], [comment, valid]):
+            with pytest.raises(ValueError, match="invalid case result"):
+                waiter.find_result(comments, **args)
+
+    probe = _producer().expand_cases([{"test_id": "worker_os_blue"}], DEFAULTS)[0]
+    probe_result = {
+        **result,
+        **{k: probe[k] for k in ("case_id", "test_id", "worker", "target_pool", "docker", "resources")},
+    }
+    del probe_result["target_pool"]
+    probe_marker = f"Lite-CI-V3 7:1:{probe['case_id']}\n"
+    comment["body"] = probe_marker + json.dumps(probe_result)
+    assert waiter.find_result([comment], **{**args, "item": probe}) is None
 
 
 @pytest.mark.parametrize("test_id", ["worker_os_blue", "dsv4_flash_a3_8p_example"])

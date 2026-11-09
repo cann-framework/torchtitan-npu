@@ -11,12 +11,11 @@ import argparse
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 from pathlib import Path
 
-from tests.integration_tests import OverrideDefinitions
+from tests.integration_tests import OverrideDefinitions  # noqa: TC001 - retain runtime annotation resolution
 from tests.integration_tests.tools.lite_actions.contract import execution_timeout
 
 
@@ -59,17 +58,7 @@ def run_dispatch_smoke(test: OverrideDefinitions, *, output_dir: Path) -> None:
     elif nodes == 1:
         node_rank = 0
     else:
-        # Existing worker allocations provide NODE_IPS. Manual runs can avoid
-        # local-IP discovery by explicitly supplying NODE_RANK on each node.
-        local_ips = {row[4][0] for row in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
-        try:
-            local_ips.update(subprocess.check_output(["hostname", "-I"], text=True, timeout=3).split())
-        except (OSError, subprocess.SubprocessError):
-            pass
-        matches = [index for index, ip in enumerate(node_ips) if ip in local_ips]
-        if len(matches) != 1:
-            raise RuntimeError("cannot resolve node rank from NODE_IPS; set NODE_RANK explicitly")
-        node_rank = matches[0]
+        raise RuntimeError("multi-node smoke requires dispatcher-assigned NODE_RANK")
     if not 0 <= node_rank < nodes:
         raise RuntimeError(f"invalid NODE_RANK={node_rank} for {nodes} nodes")
 

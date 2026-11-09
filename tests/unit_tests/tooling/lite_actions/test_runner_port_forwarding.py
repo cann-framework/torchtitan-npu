@@ -5,6 +5,7 @@
 
 """CPU runner contracts for trusted port leases; no NPU or child launches."""
 
+import socket
 import sys
 from types import ModuleType
 
@@ -90,3 +91,51 @@ def test_multi_node_runner_passes_trusted_ports_to_actual_subprocess(
     assert {key: environment[key] for key in port_lease} == port_lease
     assert environment['KEEP_RECIPE_ENV'] == 'present'
     assert original.env_vars['MASTER_PORT'] == '6316'
+
+
+@pytest.mark.parametrize("nodes,rank", [(1, 0), (2, 1)], ids=["single-node", "multi-node"])
+def test_smoke_runner_passes_topology_and_port_lease(monkeypatch, tmp_path, port_lease, nodes, rank):
+    test = OverrideDefinitions(test_name="sample_smoke", ci_kind="npu_smoke", nnodes=nodes, ngpu=8, timeout=75)
+    for key, value in {
+        "LITE_CI_JOB_ID": "fixture",
+        "NNODES": str(nodes),
+        "NGPU": "8",
+        "NODE_RANK": str(rank),
+        "NODE_IPS": ",".join(f"192.0.2.{i + 1}" for i in range(nodes)),
+    }.items():
+        monkeypatch.setenv(key, value)
+    calls = []
+    monkeypatch.setattr(runner.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)))
+
+    if nodes == 1:
+        runner.run_single(test, output_dir=tmp_path)
+    else:
+        runner.run_distributed(test, phase="launch", output_dir=tmp_path)
+
+    command, options = calls[0]
+    assert command[command.index("--nnodes") + 1] == str(nodes)
+    assert command[command.index("--nproc-per-node") + 1] == "8"
+    assert command[command.index("--node-rank") + 1] == str(rank)
+    assert {key: options["env"][key] for key in port_lease} == port_lease
+    assert options["env"]["LITE_SMOKE_EXPECTED_WORLD"] == str(nodes * 8)
+    runner.verify_dispatch_smoke(test, tmp_path)
+
+
+@pytest.mark.parametrize("missing", ["NODE_RANK", "LITE_CI_HCCL_NPU_PORT_RANGE"])
+def test_multi_node_smoke_rejects_missing_rank_or_port_lease(monkeypatch, tmp_path, port_lease, missing):
+    test = OverrideDefinitions(test_name="sample_smoke", ci_kind="npu_smoke", nnodes=2, ngpu=8)
+    for key, value in {
+        "LITE_CI_JOB_ID": "fixture",
+        "NNODES": "2",
+        "NGPU": "8",
+        "NODE_RANK": "1",
+        "NODE_IPS": "192.0.2.1,192.0.2.2",
+    }.items():
+        monkeypatch.setenv(key, value)
+    # Even an apparently matching local IP must not substitute for assigned rank.
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: [(None, None, None, None, ("192.0.2.2", 0))])
+    monkeypatch.setattr(runner.subprocess, "check_output", lambda *args, **kwargs: "192.0.2.2")
+    monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: pytest.fail("unexpected smoke launch"))
+    monkeypatch.delenv(missing)
+    with pytest.raises(RuntimeError, match="NODE_RANK" if missing == "NODE_RANK" else "complete dispatcher port lease"):
+        runner.run_distributed(test, phase="launch", output_dir=tmp_path)
