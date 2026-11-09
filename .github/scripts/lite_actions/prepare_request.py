@@ -49,7 +49,14 @@ def main() -> None:
     if os.environ["GITHUB_REPOSITORY"] != REPO:
         raise ValueError("untrusted GitHub CI repository")
     defaults = {k: os.environ["CI_DEFAULT_" + k.upper()] for k in ("worker", "target_pool", "docker")}
-    cases = expand_cases(parse_cases(os.environ["CI_TEST_CASES"]), defaults)
+    selected = os.environ.get("CI_TEST_CASES", "")
+    if selected:
+        selectors = parse_cases(selected)
+    else:
+        from tests.integration_tests.nightly_all_models_test.smoke_catalog import load_smoke_catalog
+
+        selectors = [{"suite": load_smoke_catalog()["default_profile"]}]
+    cases = expand_cases(selectors, defaults)
     plan = create_plan(
         cases,
         run_id=int(os.environ["GITHUB_RUN_ID"]),

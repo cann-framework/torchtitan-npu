@@ -33,7 +33,7 @@ def _producer():
     return module
 
 
-def test_default_github_cases_keep_baseline_execution_shape():
+def test_explicit_github_profile_keeps_original_execution_shape():
     cases = _producer().expand_cases([{"suite": "github_smoke"}], DEFAULTS)
     assert [(c["test_id"], c["worker"], c["resources"]) for c in cases] == [
         ("worker_os_blue", "blue", {"nodes": 0, "devices_per_node": 0}),
@@ -41,6 +41,46 @@ def test_default_github_cases_keep_baseline_execution_shape():
         ("dispatch_smoke_16p", "blue", {"nodes": 2, "devices_per_node": 8}),
     ]
     assert [c["docker"] for c in cases] == [None, DEFAULTS["docker"], DEFAULTS["docker"]]
+
+
+@pytest.mark.parametrize(
+    "selector,profile",
+    [
+        (None, "fifo_smoke"),
+        ("", "fifo_smoke"),
+        ('[{"suite":"github_smoke"}]', "github_smoke"),
+    ],
+)
+def test_prepare_uses_catalog_default_or_explicit_profile(tmp_path, monkeypatch, selector, profile):
+    data = smoke_catalog.load_smoke_catalog()
+    assert data["default_profile"] == "fifo_smoke"
+    monkeypatch.chdir(tmp_path)
+    env = {
+        "CI_WORKFLOW": "lite_actions_dispatcher_smoke.yml",
+        "CI_SOURCE_SHA": "a" * 40,
+        "GITHUB_REPOSITORY": "cann-framework/torchtitan-npu",
+        "GITHUB_RUN_ID": "7",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_OUTPUT": str(tmp_path / "output"),
+        **{"CI_DEFAULT_" + k.upper(): v for k, v in DEFAULTS.items()},
+    }
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    if selector is None:
+        monkeypatch.delenv("CI_TEST_CASES", raising=False)
+    else:
+        monkeypatch.setenv("CI_TEST_CASES", selector)
+    _producer().main()
+    output = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
+    plan = json.loads((tmp_path / ".ci-request/ci-request.json").read_text())
+    assert json.loads(output["matrix"])["include"] == plan["cases"]
+    assert [case["test_id"] for case in plan["cases"]] == data["profiles"][profile]
+    if profile == "fifo_smoke":
+        assert [case["case_id"] for case in plan["cases"][:3]] == [
+            "case_000_dispatch_smoke_8p",
+            "case_001_dispatch_smoke_16p",
+            "case_002_dispatch_smoke_8p",
+        ]
 
 
 def test_repeated_smoke_gets_distinct_cases_and_a_valid_plan():
