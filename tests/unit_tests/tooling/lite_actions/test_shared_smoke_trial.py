@@ -45,12 +45,15 @@ def test_default_github_cases_keep_baseline_execution_shape():
 
 def test_repeated_smoke_gets_distinct_cases_and_a_valid_plan():
     cases = _producer().expand_cases([{"suite": "fifo_smoke"}], DEFAULTS)
-    assert [c["case_id"] for c in cases] == [
+    declared = smoke_catalog.load_smoke_catalog()["profiles"]["fifo_smoke"]
+    assert [c["test_id"] for c in cases] == declared
+    assert [c["case_id"] for c in cases] == [f"case_{index:03d}_{name}" for index, name in enumerate(declared)]
+    assert [c["case_id"] for c in cases[:3]] == [
         "case_000_dispatch_smoke_8p",
         "case_001_dispatch_smoke_16p",
         "case_002_dispatch_smoke_8p",
     ]
-    assert [c["resources"]["nodes"] for c in cases] == [1, 2, 1]
+    assert [c["resources"]["nodes"] for c in cases[:3]] == [1, 2, 1]
     plan = create_plan(
         cases, run_id=7, attempt=1, sha="a" * 40, workflow="lite_actions_dispatcher_smoke.yml", defaults=DEFAULTS
     )
@@ -111,7 +114,12 @@ def test_duplicate_probe_and_training_still_rejected(test_id):
 
 def test_new_manifest_case_expands_matrix_and_pinned_plan_without_workflow_changes(tmp_path, monkeypatch):
     data = smoke_catalog.load_smoke_catalog()
-    case = dict(data["cases"][2], test_id="dispatch_smoke_4p", label="4P smoke", devices_per_node=4)
+    declared = list(data["profiles"]["fifo_smoke"])
+    test_id = "cpu_catalog_probe_4p"
+    while any(case["test_id"] == test_id for case in data["cases"]):
+        test_id += "_x"
+    smoke_8p = next(case for case in data["cases"] if case["test_id"] == "dispatch_smoke_8p")
+    case = dict(smoke_8p, test_id=test_id, label="4P smoke", devices_per_node=4)
     data["cases"].append(case)
     data["profiles"]["fifo_smoke"].append(case["test_id"])
     data["defaults"].update(target_pool="a3_shared_blue_trial", docker="example:trial")
@@ -137,15 +145,18 @@ def test_new_manifest_case_expands_matrix_and_pinned_plan_without_workflow_chang
     outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
     plan = json.loads((tmp_path / ".ci-request/ci-request.json").read_text())
     assert json.loads(outputs["matrix"])["include"] == plan["cases"]
-    assert [c["case_id"] for c in plan["cases"]] == [
+    assert [c["case_id"] for c in plan["cases"][:3]] == [
         "case_000_dispatch_smoke_8p",
         "case_001_dispatch_smoke_16p",
         "case_002_dispatch_smoke_8p",
-        "case_003_dispatch_smoke_4p",
     ]
-    assert plan["cases"][3]["resources"] == {"nodes": 1, "devices_per_node": 4}
+    assert [c["test_id"] for c in plan["cases"]] == [*declared, test_id]
+    assert [c["case_id"] for c in plan["cases"]] == [
+        f"case_{index:03d}_{name}" for index, name in enumerate([*declared, test_id])
+    ]
+    assert plan["cases"][-1]["resources"] == {"nodes": 1, "devices_per_node": 4}
     assert all(c["target_pool"] == "a3_shared_blue_trial" and c["docker"] == "example:trial" for c in plan["cases"])
-    assert entrypoint.select(entrypoint.catalog(), test_id="dispatch_smoke_4p")[0].ngpu == 4
+    assert entrypoint.select(entrypoint.catalog(), test_id=test_id)[0].ngpu == 4
     assert workflow.read_bytes() == original_workflow
 
 

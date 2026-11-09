@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.integration_tests.nightly_all_models_test import smoke_catalog
 from tests.integration_tests.tools.lite_actions.contract import create_plan
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -49,17 +50,23 @@ def prepared_run(tmp_path):
 
 def test_all_planned_cases_with_distinct_ids_succeed(prepared_run):
     verifier, plan_path, results, cases, args = prepared_run
-    assert [case["test_id"] for case in cases] == ["dispatch_smoke_8p", "dispatch_smoke_16p", "dispatch_smoke_8p"]
-    assert verifier.verify(plan_path, results, **args) == 3
+    declared = smoke_catalog.load_smoke_catalog()["profiles"]["fifo_smoke"]
+    assert declared[:3] == ["dispatch_smoke_8p", "dispatch_smoke_16p", "dispatch_smoke_8p"]
+    assert [case["test_id"] for case in cases] == declared
+    assert [case["case_id"] for case in cases] == [f"case_{index:03d}_{name}" for index, name in enumerate(declared)]
+    assert verifier.verify(plan_path, results, **args) == len(declared)
 
 
 def test_missing_matrix_job_cannot_report_success(prepared_run):
     verifier, plan_path, results, cases, args = prepared_run
-    missing = results / f"lite-ci-matrix-2-{cases[0]['case_id']}"
-    (missing / "case_id").unlink()
-    missing.rmdir()
-    with pytest.raises(ValueError, match="completion set"):
-        verifier.verify(plan_path, results, **args)
+    for case in cases:
+        missing = results / f"lite-ci-matrix-2-{case['case_id']}"
+        (missing / "case_id").unlink()
+        missing.rmdir()
+        with pytest.raises(ValueError, match="completion set"):
+            verifier.verify(plan_path, results, **args)
+        missing.mkdir()
+        (missing / "case_id").write_text(case["case_id"] + "\n")
 
 
 def test_unexpected_or_old_attempt_artifact_is_rejected(prepared_run):
