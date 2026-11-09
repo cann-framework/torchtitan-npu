@@ -146,14 +146,14 @@ class CIContract(unittest.TestCase):
             with self.subTest(lines=lines):
                 self.assertIsNone(self.waiter.find_result([comment({**result, "last_20_lines": lines})], **args))
 
-    def test_only_two_business_workflows_and_no_schedule(self):
+    def test_nightly_reuses_common_workflow_without_schedule(self):
         callers = []
         for p in (ROOT / ".github/workflows").glob("*.yml"):
             data = yaml.load(p.read_text(), Loader=yaml.BaseLoader)
             for job in data.get("jobs", {}).values():
                 if job.get("uses") == "./.github/workflows/lite_actions_common.yml":
                     callers.append(p.name)
-        self.assertEqual(set(callers), {"nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"})
+        self.assertEqual(set(callers), {"nightly_fulltests.yml"})
         for name in callers:
             data = yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
             self.assertEqual(set(data["on"]), {"pull_request", "workflow_dispatch"})
@@ -258,14 +258,13 @@ class CIContract(unittest.TestCase):
             field = common["on"]["workflow_call"]["inputs"][key]
             self.assertEqual(field["required"], "true")
             self.assertNotIn("default", field)
-        for filename in ("nightly_fulltests.yml", "lite_actions_dispatcher_smoke.yml"):
-            data = yaml.load((root / filename).read_text(), Loader=yaml.BaseLoader)
-            self.assertTrue(
-                all(
-                    data["jobs"]["ci"]["with"].get(key)
-                    for key in ("default_worker", "default_target_pool", "default_docker")
-                )
+        data = yaml.load((root / "nightly_fulltests.yml").read_text(), Loader=yaml.BaseLoader)
+        self.assertTrue(
+            all(
+                data["jobs"]["ci"]["with"].get(key)
+                for key in ("default_worker", "default_target_pool", "default_docker")
             )
+        )
         nightly = yaml.load((root / "nightly_fulltests.yml").read_text(), Loader=yaml.BaseLoader)
         self.assertEqual(
             json.loads(nightly["jobs"]["ci"]["with"]["default_cases"]),

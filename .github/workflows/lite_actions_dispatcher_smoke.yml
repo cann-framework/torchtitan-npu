@@ -4,25 +4,11 @@
 # LICENSE file in the root directory of this source tree.
 
 name: Dispatcher-Smoke
-run-name: ${{ inputs.source_provider == 'gitcode' && format('lite-gitcode:{0}', fromJSON(inputs.gitcode_request).bridge.bridge_nonce) || github.workflow }}
 on:
   pull_request:
     branches: [master]
   workflow_dispatch:
     inputs:
-      source_provider:
-        description: GitHub native or trusted GitCode Bridge
-        type: choice
-        options: [github, gitcode]
-        default: github
-      gitcode_request:
-        description: Bounded immutable Bridge dispatch intent JSON
-        type: string
-        required: false
-      gitcode_attestation:
-        description: Signed original-Action envelope, not a newly sampled PR snapshot
-        type: string
-        required: false
       test_cases:
         description: JSON test_id/suite selectors; empty uses defaults
         type: string
@@ -32,139 +18,104 @@ permissions:
   actions: read
   checks: read
 jobs:
-  ci:
-    if: inputs.source_provider != 'gitcode'
-    uses: ./.github/workflows/lite_actions_common.yml
-    with:
-      workflow: lite_actions_dispatcher_smoke.yml
-      default_cases: '[{"suite":"github_smoke"}]'
-      test_cases: ${{ inputs.test_cases }}
-      # This profile is an explicit manual pilot on ci/* branches only.
-      show_case_id: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/ci/') && inputs.test_cases == '[{"suite":"fifo_smoke"}]' }}
-      default_worker: blue
-      default_target_pool: a3_shared_blue
-      default_docker: cann_master_torchtitan_master_xyj
+  prepare:
+    if: >-
+      github.repository == 'cann-framework/torchtitan-npu' &&
+      ((github.event_name == 'pull_request' && github.base_ref == 'master') ||
+       (github.event_name == 'workflow_dispatch' &&
+        (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/ci/'))))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      plan_digest: ${{ steps.plan.outputs.plan_digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      - name: Expand immutable test plan
+        id: plan
+        env:
+          CI_TEST_CASES: ${{ inputs.test_cases != '' && inputs.test_cases || '[{"suite":"github_smoke"}]' }}
+          CI_SOURCE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          CI_WORKFLOW: lite_actions_dispatcher_smoke.yml
+          CI_DEFAULT_WORKER: blue
+          CI_DEFAULT_TARGET_POOL: a3_shared_blue
+          CI_DEFAULT_DOCKER: cann_master_torchtitan_master_xyj
+        run: PYTHONPATH="$PWD" python3 .github/scripts/lite_actions/prepare_request.py
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request/ci-request.json
+          retention-days: 1
+          if-no-files-found: error
+  case:
+    # PRs validate the plan without dispatching hardware work.
+    if: github.event_name != 'pull_request'
+    needs: prepare
+    name: ${{ matrix.case_id }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Wait for assigned worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_SOURCE_SHA: ${{ github.sha }}
+          CI_RESULT_AUTHOR: ${{ vars.LITE_CI_RESULT_ACTOR }}
+          CI_PLAN_DIGEST: ${{ needs.prepare.outputs.plan_digest }}
+          CI_CASE: ${{ toJSON(matrix) }}
+          CI_WORKFLOW: lite_actions_dispatcher_smoke.yml
+        run: python3 .github/scripts/lite_actions/wait_result.py
+      - name: Record completed case
+        env:
+          CI_CASE_ID: ${{ matrix.case_id }}
+        run: |
+          mkdir -p .ci-matrix-result
+          printf '%s\n' "$CI_CASE_ID" > .ci-matrix-result/case_id
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lite-ci-matrix-${{ github.run_attempt }}-${{ matrix.case_id }}
+          path: .ci-matrix-result/case_id
+          retention-days: 1
+          if-no-files-found: error
   result:
-    name: Lite-Actions-Smoke
-    if: always() && inputs.source_provider != 'gitcode' && github.event_name != 'pull_request'
-    needs: ci
+    name: ${{ github.event_name == 'pull_request' && 'Lite-Actions-PR-Plan' || 'Lite-Actions-Smoke' }}
+    if: always()
+    needs: [prepare, case]
     runs-on: ubuntu-latest
     steps:
-      - env:
-          CI_RESULT: ${{ needs.ci.result }}
-        run: test "$CI_RESULT" = success
-
-  plan-validation:
-    name: Lite-Actions-PR-Plan
-    if: always() && inputs.source_provider != 'gitcode' && github.event_name == 'pull_request'
-    needs: ci
-    runs-on: ubuntu-latest
-    steps:
-      - env:
-          CI_RESULT: ${{ needs.ci.result }}
-        run: test "$CI_RESULT" = success
-
-  prepare-gitcode:
-    name: prepare-gitcode
-    if: >-
-      github.repository == 'cann-framework/torchtitan-npu' &&
-      github.event_name == 'workflow_dispatch' &&
-      inputs.source_provider == 'gitcode' &&
-      github.ref == 'refs/heads/master'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Reject native reruns and unpinned deployment
+      - name: Require successful plan and matrix
         env:
-          SDK_SHA: ${{ vars.LITE_GITCODE_SDK_SHA }}
-          ATTEMPT: ${{ github.run_attempt }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          MATRIX_RESULT: ${{ needs.case.result }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          test "$ATTEMPT" = 1 || { echo "Use a new trusted GitCode Bridge rerun"; exit 1; }
-          [[ "$SDK_SHA" =~ ^[0-9a-f]{40}$ ]]
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+          test "$PREPARE_RESULT" = success
+          if [ "$EVENT_NAME" != pull_request ]; then test "$MATRIX_RESULT" = success; fi
+      - uses: actions/checkout@v4
+        if: github.event_name != 'pull_request'
         with:
           ref: ${{ github.sha }}
-          path: control
-          persist-credentials: false
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/download-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
-          repository: depeng1994/lite-actions
-          ref: ${{ vars.LITE_GITCODE_SDK_SHA }}
-          path: worker-sdk
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+          name: lite-ci-request-${{ github.run_attempt }}
+          path: .ci-request
+      - uses: actions/download-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
-          node-version: '24'
-      - name: Install locked control-only artifact SDK
-        working-directory: control/.github/scripts/lite_actions/gitcode
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: prepare immutable GitCode request
-        uses: ./control/.github/scripts/lite_actions/gitcode
-        with:
-          phase: prepare
-          release-config: ${{ vars.LITE_GITCODE_SMOKE_RELEASE }}
-          gitcode-request: ${{ inputs.gitcode_request }}
-          gitcode-attestation: ${{ inputs.gitcode_attestation }}
-          sdk-root: ${{ github.workspace }}/worker-sdk
-          sdk-sha: ${{ vars.LITE_GITCODE_SDK_SHA }}
-          github-token: ${{ github.token }}
-          gitcode-token: ${{ secrets.LITE_GITCODE_AUTHORITY_TOKEN }}
-          checks-key: ${{ secrets.LITE_GITCODE_CHECKS_APP_KEY }}
-
-  wait-gitcode:
-    name: wait-gitcode
-    if: >-
-      github.repository == 'cann-framework/torchtitan-npu' &&
-      github.event_name == 'workflow_dispatch' &&
-      inputs.source_provider == 'gitcode' &&
-      github.ref == 'refs/heads/master'
-    needs: prepare-gitcode
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    steps:
-      - name: Reject native reruns and unpinned deployment
+          pattern: lite-ci-matrix-${{ github.run_attempt }}-*
+          path: .ci-matrix-results
+      - name: Require one completion per planned case
+        if: github.event_name != 'pull_request'
         env:
-          SDK_SHA: ${{ vars.LITE_GITCODE_SDK_SHA }}
-          ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          test "$ATTEMPT" = 1 || { echo "Use a new trusted GitCode Bridge rerun"; exit 1; }
-          [[ "$SDK_SHA" =~ ^[0-9a-f]{40}$ ]]
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.sha }}
-          path: control
-          persist-credentials: false
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          repository: depeng1994/lite-actions
-          ref: ${{ vars.LITE_GITCODE_SDK_SHA }}
-          path: worker-sdk
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '24'
-      - name: Install locked control-only artifact SDK
-        working-directory: control/.github/scripts/lite_actions/gitcode
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: wait immutable GitCode request
-        uses: ./control/.github/scripts/lite_actions/gitcode
-        with:
-          phase: wait
-          release-config: ${{ vars.LITE_GITCODE_SMOKE_RELEASE }}
-          gitcode-request: ${{ inputs.gitcode_request }}
-          gitcode-attestation: ${{ inputs.gitcode_attestation }}
-          sdk-root: ${{ github.workspace }}/worker-sdk
-          sdk-sha: ${{ vars.LITE_GITCODE_SDK_SHA }}
-          github-token: ${{ github.token }}
-          gitcode-token: ${{ secrets.LITE_GITCODE_AUTHORITY_TOKEN }}
-
-  gitcode-result:
-    name: Lite-Actions-GitCode-Smoke
-    if: always() && inputs.source_provider == 'gitcode'
-    needs: [prepare-gitcode, wait-gitcode]
-    runs-on: ubuntu-24.04
-    steps:
-      - env:
-          CI_RESULT: ${{ needs.wait-gitcode.result }}
-          CI_PREPARE: ${{ needs.prepare-gitcode.result }}
-        run: test "$CI_RESULT" = success && test "$CI_PREPARE" = success
+          CI_SOURCE_SHA: ${{ github.sha }}
+          CI_PLAN_DIGEST: ${{ needs.prepare.outputs.plan_digest }}
+        run: PYTHONPATH="$PWD" python3 .github/scripts/lite_actions/verify_matrix.py

@@ -281,7 +281,7 @@ class WorkflowSyntaxTests(unittest.TestCase):
     def test_github_context_expressions_are_not_literal_single_braces(self):
         import re
 
-        for name in ("lite_actions_dispatcher_smoke.yml", "nightly_fulltests.yml"):
+        for name in ("nightly_fulltests.yml",):
             text = (ROOT / ".github/workflows" / name).read_text()
             self.assertIsNone(re.search(r"\$\{\s*(?:vars|github|inputs|secrets|needs)\.", text))
             self.assertIn("ref: ${{ github.sha }}", text)
@@ -289,7 +289,7 @@ class WorkflowSyntaxTests(unittest.TestCase):
             self.assertIn("sdk-sha: ${{ vars.LITE_GITCODE_SDK_SHA }}", text)
 
     def test_checks_private_key_is_only_supplied_to_prepare(self):
-        for name in ("lite_actions_dispatcher_smoke.yml", "nightly_fulltests.yml"):
+        for name in ("nightly_fulltests.yml",):
             text = (ROOT / ".github/workflows" / name).read_text()
             self.assertEqual(text.count("checks-key: ${{ secrets.LITE_GITCODE_CHECKS_APP_KEY }}"), 1)
             self.assertNotIn("checks-key:", text.split("  wait-gitcode:")[1])
@@ -306,7 +306,7 @@ if(code!==0)process.exit(2);
     def test_control_and_sdk_are_sibling_checkouts_and_unproven_action_is_unregistered(self):
         import yaml
 
-        for name in ("lite_actions_dispatcher_smoke.yml", "nightly_fulltests.yml"):
+        for name in ("nightly_fulltests.yml",):
             document = yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
             for phase in ("prepare-gitcode", "wait-gitcode"):
                 steps = document["jobs"][phase]["steps"]

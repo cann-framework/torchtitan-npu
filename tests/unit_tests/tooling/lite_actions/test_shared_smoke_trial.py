@@ -158,13 +158,13 @@ def test_duplicate_probe_in_manifest_is_rejected(tmp_path):
         smoke_catalog.load_smoke_catalog(manifest)
 
 
-def test_trial_is_explicit_and_existing_matrix_job_name_is_default():
+def test_trial_uses_one_native_workflow_with_case_ids():
     workflow = yaml.load(
         (ROOT / ".github/workflows/lite_actions_dispatcher_smoke.yml").read_text(), Loader=yaml.BaseLoader
     )
-    common = yaml.load((ROOT / ".github/workflows/lite_actions_common.yml").read_text(), Loader=yaml.BaseLoader)
-    selector = workflow["jobs"]["ci"]["with"]["show_case_id"]
-    assert "workflow_dispatch" in selector and "refs/heads/ci/" in selector
-    assert 'inputs.test_cases == \'[{"suite":"fifo_smoke"}]\'' in selector
-    assert common["on"]["workflow_call"]["inputs"]["show_case_id"]["default"] == "false"
-    assert common["jobs"]["case"]["name"] == "${{ inputs.show_case_id && matrix.case_id || matrix.test_id }}"
+    assert set(workflow["jobs"]) == {"prepare", "case", "result"}
+    assert set(workflow["on"]["workflow_dispatch"]["inputs"]) == {"test_cases"}
+    assert "refs/heads/ci/" in workflow["jobs"]["prepare"]["if"]
+    assert workflow["jobs"]["case"]["name"] == "${{ matrix.case_id }}"
+    assert workflow["jobs"]["case"]["needs"] == "prepare"
+    assert workflow["jobs"]["result"]["needs"] == ["prepare", "case"]

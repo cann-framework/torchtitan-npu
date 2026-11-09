@@ -11,7 +11,7 @@ def test_organization_schema3_workflow_call_remains_separate_from_gitcode_jobs()
     common = yaml.load((ROOT / ".github/workflows/lite_actions_common.yml").read_text(), Loader=yaml.BaseLoader)
     assert "workflow" in common["on"]["workflow_call"]["inputs"]
     assert "pipeline" not in common["on"]["workflow_call"]["inputs"]
-    for name in ("lite_actions_dispatcher_smoke.yml", "nightly_fulltests.yml"):
+    for name in ("nightly_fulltests.yml",):
         workflow = yaml.load((ROOT / ".github/workflows" / name).read_text(), Loader=yaml.BaseLoader)
         native = workflow["jobs"]["ci"]
         assert native["uses"] == "./.github/workflows/lite_actions_common.yml"
