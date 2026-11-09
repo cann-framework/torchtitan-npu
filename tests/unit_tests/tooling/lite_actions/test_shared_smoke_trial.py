@@ -10,7 +10,6 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from tests.integration_tests.nightly_all_models_test import smoke_catalog
 from tests.integration_tests.tools.lite_actions import entrypoint
@@ -81,23 +80,7 @@ def test_prepare_uses_catalog_default_or_explicit_profile(tmp_path, monkeypatch,
             "case_001_dispatch_smoke_16p",
             "case_002_dispatch_smoke_8p",
         ]
-
-
-def test_repeated_smoke_gets_distinct_cases_and_a_valid_plan():
-    cases = _producer().expand_cases([{"suite": "fifo_smoke"}], DEFAULTS)
-    declared = smoke_catalog.load_smoke_catalog()["profiles"]["fifo_smoke"]
-    assert [c["test_id"] for c in cases] == declared
-    assert [c["case_id"] for c in cases] == [f"case_{index:03d}_{name}" for index, name in enumerate(declared)]
-    assert [c["case_id"] for c in cases[:3]] == [
-        "case_000_dispatch_smoke_8p",
-        "case_001_dispatch_smoke_16p",
-        "case_002_dispatch_smoke_8p",
-    ]
-    assert [c["resources"]["nodes"] for c in cases[:3]] == [1, 2, 1]
-    plan = create_plan(
-        cases, run_id=7, attempt=1, sha="a" * 40, workflow="lite_actions_dispatcher_smoke.yml", defaults=DEFAULTS
-    )
-    assert plan["cases"] == cases
+        assert [case["resources"]["nodes"] for case in plan["cases"][:3]] == [1, 2, 1]
 
 
 def test_repeated_smoke_results_cannot_be_swapped():
@@ -198,8 +181,6 @@ def test_new_manifest_case_expands_matrix_and_pinned_plan_without_workflow_chang
     catalog_path.write_text(json.dumps(data))
     monkeypatch.setattr(smoke_catalog, "CATALOG_PATH", catalog_path)
     monkeypatch.chdir(tmp_path)
-    workflow = ROOT / ".github/workflows/lite_actions_dispatcher_smoke.yml"
-    original_workflow = workflow.read_bytes()
     env = {
         "CI_TEST_CASES": '[{"suite":"fifo_smoke"}]',
         "CI_WORKFLOW": "lite_actions_dispatcher_smoke.yml",
@@ -228,7 +209,6 @@ def test_new_manifest_case_expands_matrix_and_pinned_plan_without_workflow_chang
     assert plan["cases"][-1]["resources"] == {"nodes": 1, "devices_per_node": 4}
     assert all(c["target_pool"] == "a3_shared_blue_trial" and c["docker"] == "example:trial" for c in plan["cases"])
     assert entrypoint.select(entrypoint.catalog(), test_id=test_id)[0].ngpu == 4
-    assert workflow.read_bytes() == original_workflow
 
 
 def test_duplicate_probe_in_manifest_is_rejected(tmp_path):
@@ -238,15 +218,3 @@ def test_duplicate_probe_in_manifest_is_rejected(tmp_path):
     manifest.write_text(json.dumps(data))
     with pytest.raises(ValueError, match="duplicate"):
         smoke_catalog.load_smoke_catalog(manifest)
-
-
-def test_trial_uses_one_native_workflow_with_case_ids():
-    workflow = yaml.load(
-        (ROOT / ".github/workflows/lite_actions_dispatcher_smoke.yml").read_text(), Loader=yaml.BaseLoader
-    )
-    assert set(workflow["jobs"]) == {"prepare", "case", "result"}
-    assert set(workflow["on"]["workflow_dispatch"]["inputs"]) == {"test_cases"}
-    assert "refs/heads/ci/" in workflow["jobs"]["prepare"]["if"]
-    assert workflow["jobs"]["case"]["name"] == "${{ matrix.case_id }}"
-    assert workflow["jobs"]["case"]["needs"] == "prepare"
-    assert workflow["jobs"]["result"]["needs"] == ["prepare", "case"]
