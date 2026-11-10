@@ -5,9 +5,8 @@
 
 """Adapter for the shared model-owned smoke catalog."""
 
-from tests.integration_tests.nightly_all_models_test.smoke_catalog import build_smoke_list, load_smoke_catalog
+from tests.integration_tests.nightly_all_models_test.smoke_catalog import build_smoke_list
 
 
 def build_test_list():
-    tests = {test.test_name: test for test in build_smoke_list()}
-    return [tests[name] for name in load_smoke_catalog()["profiles"]["a3_8p_smoke_tests"]]
+    return [test for test in build_smoke_list() if test.ci_kind == "npu_smoke" and test.nnodes == 1 and test.ngpu == 8]

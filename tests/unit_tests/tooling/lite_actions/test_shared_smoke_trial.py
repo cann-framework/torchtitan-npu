@@ -7,6 +7,7 @@
 
 import importlib.util
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ import pytest
 from tests.integration_tests.nightly_all_models_test import smoke_catalog
 from tests.integration_tests.tools.lite_actions import entrypoint
 from tests.integration_tests.tools.lite_actions.contract import create_plan, normalize
+
+pytestmark = pytest.mark.tooling
 
 ROOT = Path(__file__).resolve().parents[4]
 DEFAULTS = {
@@ -32,27 +35,28 @@ def _producer():
     return module
 
 
-def test_explicit_github_profile_keeps_original_execution_shape():
-    cases = _producer().expand_cases([{"suite": "github_smoke"}], DEFAULTS)
+def test_smoke_profile_uses_model_defaults_and_expected_execution_shape():
+    other_defaults = {"worker": "yellow", "target_pool": "other", "docker": "other:tag"}
+    cases = _producer().expand_cases([{"suite": "dispatch_smoke"}], other_defaults)
     assert [(c["test_id"], c["worker"], c["resources"]) for c in cases] == [
         ("worker_os_blue", "blue", {"nodes": 0, "devices_per_node": 0}),
         ("dispatch_smoke_8p", "blue", {"nodes": 1, "devices_per_node": 8}),
         ("dispatch_smoke_16p", "blue", {"nodes": 2, "devices_per_node": 8}),
+        ("dispatch_smoke_8p", "blue", {"nodes": 1, "devices_per_node": 8}),
     ]
-    assert [c["docker"] for c in cases] == [None, DEFAULTS["docker"], DEFAULTS["docker"]]
+    assert [c["docker"] for c in cases] == [None, DEFAULTS["docker"], DEFAULTS["docker"], DEFAULTS["docker"]]
+    assert all(c["target_pool"] == DEFAULTS["target_pool"] for c in cases[1:])
 
 
 @pytest.mark.parametrize(
     "selector,profile",
     [
-        (None, "fifo_smoke"),
-        ("", "fifo_smoke"),
-        ('[{"suite":"github_smoke"}]', "github_smoke"),
+        (None, "dispatch_smoke"),
+        ("", "dispatch_smoke"),
+        ('[{"suite":"dispatch_smoke"}]', "dispatch_smoke"),
     ],
 )
 def test_prepare_uses_catalog_default_or_explicit_profile(tmp_path, monkeypatch, selector, profile):
-    data = smoke_catalog.load_smoke_catalog()
-    assert data["default_profile"] == "fifo_smoke"
     monkeypatch.chdir(tmp_path)
     env = {
         "CI_WORKFLOW": "lite_actions_dispatcher_smoke.yml",
@@ -73,22 +77,22 @@ def test_prepare_uses_catalog_default_or_explicit_profile(tmp_path, monkeypatch,
     output = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
     plan = json.loads((tmp_path / ".ci-request/ci-request.json").read_text())
     assert json.loads(output["matrix"])["include"] == plan["cases"]
-    assert [case["test_id"] for case in plan["cases"]] == data["profiles"][profile]
-    if profile == "fifo_smoke":
-        assert [case["case_id"] for case in plan["cases"][:3]] == [
-            "case_000_dispatch_smoke_8p",
-            "case_001_dispatch_smoke_16p",
-            "case_002_dispatch_smoke_8p",
-        ]
-        assert [case["resources"]["nodes"] for case in plan["cases"][:3]] == [1, 2, 1]
+    assert [case["test_id"] for case in plan["cases"]] == smoke_catalog.SMOKE_PROFILES[profile]
+    assert [case["case_id"] for case in plan["cases"]] == [
+        "case_000_worker_os_blue",
+        "case_001_dispatch_smoke_8p",
+        "case_002_dispatch_smoke_16p",
+        "case_003_dispatch_smoke_8p",
+    ]
+    assert [case["resources"]["nodes"] for case in plan["cases"]] == [0, 1, 2, 1]
 
 
 def test_repeated_smoke_results_cannot_be_swapped():
     spec = importlib.util.spec_from_file_location("smoke_waiter", ROOT / ".github/scripts/lite_actions/wait_result.py")
     waiter = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(waiter)
-    cases = _producer().expand_cases([{"suite": "fifo_smoke"}], DEFAULTS)
-    first, last = cases[0], cases[2]
+    cases = _producer().expand_cases([{"suite": "dispatch_smoke"}], DEFAULTS)
+    first, last = cases[1], cases[3]
     common = dict(
         schema=3,
         repo="cann-framework/torchtitan-npu",
@@ -166,23 +170,19 @@ def test_duplicate_probe_and_training_still_rejected(test_id):
         )
 
 
-def test_new_manifest_case_expands_matrix_and_pinned_plan_without_workflow_changes(tmp_path, monkeypatch):
-    data = smoke_catalog.load_smoke_catalog()
-    declared = list(data["profiles"]["fifo_smoke"])
+def test_new_profile_case_expands_matrix_and_pinned_plan_without_workflow_changes(tmp_path, monkeypatch):
+    declared = list(smoke_catalog.SMOKE_PROFILES["dispatch_smoke"])
+    definitions = smoke_catalog.build_smoke_list()
     test_id = "cpu_catalog_probe_4p"
-    while any(case["test_id"] == test_id for case in data["cases"]):
-        test_id += "_x"
-    smoke_8p = next(case for case in data["cases"] if case["test_id"] == "dispatch_smoke_8p")
-    case = dict(smoke_8p, test_id=test_id, label="4P smoke", devices_per_node=4)
-    data["cases"].append(case)
-    data["profiles"]["fifo_smoke"].append(case["test_id"])
-    data["defaults"].update(target_pool="a3_shared_blue_trial", docker="example:trial")
-    catalog_path = tmp_path / "smoke_cases.json"
-    catalog_path.write_text(json.dumps(data))
-    monkeypatch.setattr(smoke_catalog, "CATALOG_PATH", catalog_path)
+    smoke_8p = next(case for case in definitions if case.test_name == "dispatch_smoke_8p")
+    case = replace(smoke_8p, test_name=test_id, test_descr="4P smoke", ngpu=4)
+    monkeypatch.setattr(entrypoint, "build_smoke_list", lambda: [*definitions, case])
+    monkeypatch.setitem(smoke_catalog.SMOKE_PROFILES, "dispatch_smoke", [*declared, test_id])
+    monkeypatch.setitem(smoke_catalog.SMOKE_DEFAULTS, "target_pool", "a3_shared_blue_trial")
+    monkeypatch.setitem(smoke_catalog.SMOKE_DEFAULTS, "docker", "example:trial")
     monkeypatch.chdir(tmp_path)
     env = {
-        "CI_TEST_CASES": '[{"suite":"fifo_smoke"}]',
+        "CI_TEST_CASES": '[{"suite":"dispatch_smoke"}]',
         "CI_WORKFLOW": "lite_actions_dispatcher_smoke.yml",
         "CI_SOURCE_SHA": "a" * 40,
         "GITHUB_REPOSITORY": "cann-framework/torchtitan-npu",
@@ -197,24 +197,16 @@ def test_new_manifest_case_expands_matrix_and_pinned_plan_without_workflow_chang
     outputs = dict(line.split("=", 1) for line in (tmp_path / "output").read_text().splitlines())
     plan = json.loads((tmp_path / ".ci-request/ci-request.json").read_text())
     assert json.loads(outputs["matrix"])["include"] == plan["cases"]
-    assert [c["case_id"] for c in plan["cases"][:3]] == [
-        "case_000_dispatch_smoke_8p",
-        "case_001_dispatch_smoke_16p",
-        "case_002_dispatch_smoke_8p",
-    ]
     assert [c["test_id"] for c in plan["cases"]] == [*declared, test_id]
     assert [c["case_id"] for c in plan["cases"]] == [
         f"case_{index:03d}_{name}" for index, name in enumerate([*declared, test_id])
     ]
     assert plan["cases"][-1]["resources"] == {"nodes": 1, "devices_per_node": 4}
-    assert all(c["target_pool"] == "a3_shared_blue_trial" and c["docker"] == "example:trial" for c in plan["cases"])
+    assert all(c["target_pool"] == "a3_shared_blue_trial" and c["docker"] == "example:trial" for c in plan["cases"][1:])
     assert entrypoint.select(entrypoint.catalog(), test_id=test_id)[0].ngpu == 4
 
 
-def test_duplicate_probe_in_manifest_is_rejected(tmp_path):
-    data = smoke_catalog.load_smoke_catalog()
-    data["profiles"]["fifo_smoke"] = ["worker_os_blue", "worker_os_blue"]
-    manifest = tmp_path / "smoke_cases.json"
-    manifest.write_text(json.dumps(data))
+def test_duplicate_probe_in_profile_is_rejected(monkeypatch):
+    monkeypatch.setitem(smoke_catalog.SMOKE_PROFILES, "dispatch_smoke", ["worker_os_blue", "worker_os_blue"])
     with pytest.raises(ValueError, match="duplicate"):
-        smoke_catalog.load_smoke_catalog(manifest)
+        _producer().expand_cases([{"suite": "dispatch_smoke"}], DEFAULTS)

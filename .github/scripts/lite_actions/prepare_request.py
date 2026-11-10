@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
+from tests.integration_tests.nightly_all_models_test.smoke_catalog import SMOKE_DEFAULTS
 from tests.integration_tests.tools.lite_actions.contract import REPO, TEST, create_plan, normalize
 
 
@@ -41,6 +43,8 @@ def expand_cases(selectors: list[dict], defaults: dict) -> list[dict]:
             if test.test_name in seen and (test.ci_kind != "npu_smoke" or seen[test.test_name] != "npu_smoke"):
                 raise ValueError("duplicate expanded Test Case")
             seen[test.test_name] = test.ci_kind
+            if test.ci_kind == "npu_smoke":
+                test = replace(test, ci_overrides={**SMOKE_DEFAULTS, **(test.ci_overrides or {})})
             expanded.append(normalize(test, defaults, len(expanded)))
     return expanded
 
@@ -50,12 +54,7 @@ def main() -> None:
         raise ValueError("untrusted GitHub CI repository")
     defaults = {k: os.environ["CI_DEFAULT_" + k.upper()] for k in ("worker", "target_pool", "docker")}
     selected = os.environ.get("CI_TEST_CASES", "")
-    if selected:
-        selectors = parse_cases(selected)
-    else:
-        from tests.integration_tests.nightly_all_models_test.smoke_catalog import load_smoke_catalog
-
-        selectors = [{"suite": load_smoke_catalog()["default_profile"]}]
+    selectors = parse_cases(selected) if selected else [{"suite": "dispatch_smoke"}]
     cases = expand_cases(selectors, defaults)
     plan = create_plan(
         cases,

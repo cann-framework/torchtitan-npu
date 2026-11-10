@@ -32,7 +32,7 @@ def prepared_run(tmp_path):
     producer = _load("matrix_producer", ".github/scripts/lite_actions/prepare_request.py")
     verifier = _load("matrix_verifier", ".github/scripts/lite_actions/verify_matrix.py")
     defaults = dict(worker="blue", target_pool="a3_shared_blue", docker="cann_master_torchtitan_master_xyj")
-    cases = producer.expand_cases([{"suite": "fifo_smoke"}], defaults)
+    cases = producer.expand_cases([{"suite": "dispatch_smoke"}], defaults)
     plan = create_plan(
         cases, run_id=7, attempt=2, sha="a" * 40, workflow="lite_actions_dispatcher_smoke.yml", defaults=defaults
     )
@@ -50,8 +50,8 @@ def prepared_run(tmp_path):
 
 def test_all_planned_cases_with_distinct_ids_succeed(prepared_run):
     verifier, plan_path, results, cases, args = prepared_run
-    declared = smoke_catalog.load_smoke_catalog()["profiles"]["fifo_smoke"]
-    assert declared[:3] == ["dispatch_smoke_8p", "dispatch_smoke_16p", "dispatch_smoke_8p"]
+    declared = smoke_catalog.SMOKE_PROFILES["dispatch_smoke"]
+    assert declared == ["worker_os_blue", "dispatch_smoke_8p", "dispatch_smoke_16p", "dispatch_smoke_8p"]
     assert [case["test_id"] for case in cases] == declared
     assert [case["case_id"] for case in cases] == [f"case_{index:03d}_{name}" for index, name in enumerate(declared)]
     assert verifier.verify(plan_path, results, **args) == len(declared)

@@ -7,7 +7,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 __all__ = [
     "OverrideDefinitions",
@@ -24,7 +24,7 @@ class OverrideDefinitions:
     test_descr: str = "default"
     test_name: str = "default"
     ci_kind: str = "train"
-    ci_overrides: Mapping[str, str] | None = None
+    ci_overrides: Mapping[str, str] = field(default_factory=dict)
     ngpu: int = 4
     disabled: bool = False
     skip_rocm_test: bool = False

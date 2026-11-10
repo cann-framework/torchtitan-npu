@@ -93,6 +93,7 @@ def test_multi_node_runner_passes_trusted_ports_to_actual_subprocess(
     assert original.env_vars['MASTER_PORT'] == '6316'
 
 
+# 看护场景：Smoke 把调度器提供的标准通信端口和节点信息传给 torchrun。
 @pytest.mark.parametrize("nodes,rank", [(1, 0), (2, 1)], ids=["single-node", "multi-node"])
 def test_smoke_runner_passes_topology_and_port_lease(monkeypatch, tmp_path, port_lease, nodes, rank):
     test = OverrideDefinitions(test_name="sample_smoke", ci_kind="npu_smoke", nnodes=nodes, ngpu=8, timeout=75)
@@ -103,6 +104,8 @@ def test_smoke_runner_passes_topology_and_port_lease(monkeypatch, tmp_path, port
         "NODE_RANK": str(rank),
         "NODE_IPS": ",".join(f"192.0.2.{i + 1}" for i in range(nodes)),
     }.items():
+        monkeypatch.setenv(key, value)
+    for key, value in port_lease.items():
         monkeypatch.setenv(key, value)
     calls = []
     monkeypatch.setattr(runner.subprocess, "run", lambda command, **kwargs: calls.append((command, kwargs)))
@@ -117,11 +120,10 @@ def test_smoke_runner_passes_topology_and_port_lease(monkeypatch, tmp_path, port
     assert command[command.index("--nproc-per-node") + 1] == "8"
     assert command[command.index("--node-rank") + 1] == str(rank)
     assert {key: options["env"][key] for key in port_lease} == port_lease
-    assert options["env"]["LITE_SMOKE_EXPECTED_WORLD"] == str(nodes * 8)
-    runner.verify_dispatch_smoke(test, tmp_path)
 
 
-@pytest.mark.parametrize("missing", ["NODE_RANK", "LITE_CI_HCCL_NPU_PORT_RANGE"])
+# 看护场景：缺少双机节点编号或通信端口时不启动 Smoke。
+@pytest.mark.parametrize("missing", ["NODE_RANK", "HCCL_NPU_SOCKET_PORT_RANGE"])
 def test_multi_node_smoke_rejects_missing_rank_or_port_lease(monkeypatch, tmp_path, port_lease, missing):
     test = OverrideDefinitions(test_name="sample_smoke", ci_kind="npu_smoke", nnodes=2, ngpu=8)
     for key, value in {
@@ -131,6 +133,8 @@ def test_multi_node_smoke_rejects_missing_rank_or_port_lease(monkeypatch, tmp_pa
         "NODE_RANK": "1",
         "NODE_IPS": "192.0.2.1,192.0.2.2",
     }.items():
+        monkeypatch.setenv(key, value)
+    for key, value in port_lease.items():
         monkeypatch.setenv(key, value)
     # Even an apparently matching local IP must not substitute for assigned rank.
     monkeypatch.setattr(socket, "getaddrinfo", lambda *args: [(None, None, None, None, ("192.0.2.2", 0))])

@@ -15,7 +15,11 @@ import pkgutil
 import re
 from pathlib import Path
 
-from tests.integration_tests.nightly_all_models_test.smoke_catalog import build_smoke_list, load_smoke_catalog
+from tests.integration_tests.nightly_all_models_test.smoke_catalog import (
+    SMOKE_DEFAULTS,
+    SMOKE_PROFILES,
+    build_smoke_list,
+)
 
 PACKAGE="tests.integration_tests.nightly_all_models_test"
 SAFE=re.compile(r"[a-z][a-z0-9_]{0,79}\Z")
@@ -44,12 +48,17 @@ def select(catalogue: dict, *, test_id: str | None = None, suite: str | None = N
     if suite is not None:
         if suite in catalogue:
             return catalogue[suite]
-        profiles = load_smoke_catalog()['profiles']
-        if suite not in profiles:
+        if suite not in SMOKE_PROFILES:
             raise ValueError('unknown CI suite')
-        smoke = {test.test_name: test for test in build_smoke_list()}
-        selected = [smoke[name] for name in profiles[suite]]
-        # A new smoke case can be selected directly from the manifest without
+        definitions = build_smoke_list()
+        smoke = {test.test_name: test for test in definitions}
+        if len(smoke) != len(definitions):
+            raise ValueError('duplicated CI test')
+        try:
+            selected = [smoke[name] for name in SMOKE_PROFILES[suite]]
+        except KeyError as exc:
+            raise ValueError('unknown CI test') from exc
+        # A new smoke case can be selected directly from the profile without
         # adding another Python suite. Reject a collision with a training ID.
         for test in selected:
             registered = [item for group in catalogue.values() for item in group if item.test_name == test.test_name]
@@ -58,6 +67,8 @@ def select(catalogue: dict, *, test_id: str | None = None, suite: str | None = N
         return selected
     matches = [x for group in catalogue.values() for x in group if x.test_name == test_id]
     smoke = [x for x in build_smoke_list() if x.test_name == test_id]
+    if len(smoke) > 1:
+        raise ValueError('unknown or duplicated CI test')
     if smoke:
         if matches and matches != smoke:
             raise ValueError('unknown or duplicated CI test')
@@ -65,6 +76,15 @@ def select(catalogue: dict, *, test_id: str | None = None, suite: str | None = N
     if len(matches) != 1:
         raise ValueError('unknown or duplicated CI test')
     return matches
+
+
+def inspect_overrides(test):
+    if test.ci_kind == 'worker_probe':
+        return {'worker': SMOKE_DEFAULTS['worker'], **(test.ci_overrides or {})}
+    if test.ci_kind == 'npu_smoke':
+        return {**SMOKE_DEFAULTS, **(test.ci_overrides or {})}
+    return dict(test.ci_overrides or {})
+
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -80,15 +100,21 @@ def main():
     if a.phase=='inspect':
         print(json.dumps([{'test_id': t.test_name, 'ngpu': t.ngpu,
            'nnodes': t.nnodes, 'env_vars': dict(t.env_vars or {}),
-           'kind': t.ci_kind, 'ci_overrides': dict(t.ci_overrides or {}), 'label': t.test_descr, 'timeout': t.timeout} for t in selected],
+           'kind': t.ci_kind, 'ci_overrides': inspect_overrides(t), 'label': t.test_descr, 'timeout': t.timeout} for t in selected],
            separators=(',', ':')))
         return
     test=selected[0]
     if test.ci_kind == 'worker_probe':
         p.error('worker probes execute only in the trusted Lite Actions worker')
+    if test.ci_kind not in ('train', 'npu_smoke'):
+        p.error(f'unknown CI case kind: {test.ci_kind}')
     # Also support direct, manual invocation of the fixed model-owned entrypoint.
     # Remote SSH has already sourced the case's toolkit before Python starts.
-    os.environ.update(test.env_vars or {})
+    if test.ci_kind == 'npu_smoke':
+        for name, value in (test.env_vars or {}).items():
+            os.environ.setdefault(name, value)
+    else:
+        os.environ.update(test.env_vars or {})
     from tests.integration_tests.nightly_all_models_test.runner import run_single,run_distributed
     if test.nnodes==1:
         if a.phase=='launch':run_single(test,output_dir=a.output_dir)

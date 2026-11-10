@@ -316,6 +316,8 @@ gh workflow run nightly_fulltests.yml -R cann-framework/torchtitan-npu --ref mas
 * **并发调度**：Lite Actions 调度机会根据物理集群的空闲 NPU 资源池，将互不冲突的 Case 并发拉起执行（如单机 8P 各用例并发执行，或双机 16P 跨节点独立分配）。
 * **动态端口防冲突**：当同机或跨机并发拉起多个任务时，调度机会为每个任务动态分配互不冲突的通信端口（通过注入环境变量 `LITE_CI_MASTER_PORT`、`LITE_CI_HCCL_IF_BASE_PORT`、`LITE_CI_HCCL_HOST_PORT_RANGE` 与 `LITE_CI_HCCL_NPU_PORT_RANGE`）。仓内的 `nightly_all_models_test/runner.py` 会自动读取并映射这些变量，覆盖用例的默认端口。开发者编写用例时无需硬编码特殊端口，使用默认值即可。
 
+Smoke 用例直接使用调度机分配的 `MASTER_PORT`、`HCCL_IF_BASE_PORT`、`HCCL_HOST_SOCKET_PORT_RANGE` 和 `HCCL_NPU_SOCKET_PORT_RANGE`；训练用例继续使用上述 `LITE_CI_` 变量映射。
+
 ### 3.4 硬件环境与调度故障排障
 若任务长时间卡在排队状态、远端 NPU 报告 Quarantine 或出现 SSH 连接异常，属于物理集群调度机层面的环境状态问题，请参阅 Lite Actions 调度系统运维说明或联系集群管理员排查。
 
@@ -345,7 +347,8 @@ python -m tests.integration_tests.run_tests /tmp/engram-hf-output \
 
 两个业务入口为 `nightly_fulltests.yml` 与 `lite_actions_dispatcher_smoke.yml`，均支持面向 master 的 PR 和手动触发，不增加定时任务。
 Nightly 默认包含 `a3_8p_tests` 和 `a3_16p_tests`：8P Muon、8P AdamW、双节点 16P AdamW 均做五步真实训练；通信 Smoke 不替代训练覆盖。
-Dispatcher-Smoke 默认包含 Blue 系统探测和 8P/16P HCCL Smoke；Yellow 仅显式选择，A5/64P 不因此启用。
+Dispatcher-Smoke 默认包含 Blue 系统探测和 8P、16P、8P HCCL Smoke；Yellow 暂未包含在默认 profile 中，A5/64P 不因此启用。
+用例定义和 `dispatch_smoke` profile 位于 `nightly_all_models_test/smoke_catalog.py`，GitHub Actions 根据该 profile 生成 Matrix。
 
 业务 Workflow 显式配置 `default_worker`、`default_target_pool`、`default_docker`；公共 Workflow 将三者设为必填，不另设运行环境默认值。
 Python `ci_overrides` 按字段覆盖，例如 `ci_overrides={"docker": "另一个已登记环境"}`，未提供的字段继承业务 Workflow。
@@ -354,7 +357,7 @@ Python `ci_overrides` 按字段覆盖，例如 `ci_overrides={"docker": "另一�
 
 Blue 默认环境为 `cann_master_torchtitan_master_xyj`，通过 Worker 持久化配置绑定已有容器；A3 用例使用该容器的 `/usr/local/Ascend/ascend-toolkit/set_env.sh`。
 16P 训练要求两个节点均通过训练资产与依赖预检，并在 Worker 配置中允许 `train`；不能仅通过修改能力标记代替环境准备。
-完整计划使用 schema 3，绑定 repository、SHA、run、attempt、plan digest 和逐 case 身份。两仓独立实现校验，以固定 JSON 协议样例验证兼容，不要求 Python 源码逐字节镜像。
+完整计划绑定 repository、SHA、run、attempt、plan digest 和逐 case 身份。两仓独立实现校验，以固定 JSON 协议样例验证兼容，不要求 Python 源码逐字节镜像。
 每个 case 最多回传 20 行、每行 180 字符，并保留 Comment/请求体大小限制；Summary 只包含配置与状态。
 
 ### 手动多节点通信 Smoke
@@ -365,12 +368,12 @@ Blue 默认环境为 `cann_master_torchtitan_master_xyj`，通过 Worker 持久�
 source /usr/local/Ascend/ascend-toolkit/set_env.sh
 # 按实际环境设置 ASCEND_RT_VISIBLE_DEVICES；只使用已确认空闲且未被租用的设备。
 NODE_IPS=192.0.2.1,192.0.2.2 NODE_RANK=0 NNODES=2 NGPU=8 \
-LITE_CI_MASTER_PORT=16002 LITE_CI_HCCL_IF_BASE_PORT=20256 \
-LITE_CI_HCCL_HOST_PORT_RANGE=24256-24319 LITE_CI_HCCL_NPU_PORT_RANGE=28256-28319 \
+MASTER_PORT=16002 HCCL_IF_BASE_PORT=20256 \
+HCCL_HOST_SOCKET_PORT_RANGE=24256-24319 HCCL_NPU_SOCKET_PORT_RANGE=28256-28319 \
 python3 -m tests.integration_tests.tools.lite_actions.entrypoint launch \
   --test-id dispatch_smoke_16p --output-dir /tmp/manual-smoke-node0
 ```
 
 将文档示例 IP 替换为实际通信 IP，第二节点使用 `NODE_RANK=1` 及自己的新输出目录。
-手动多节点运行必须显式提供 `LITE_CI_MASTER_PORT`，不再根据 job hash 猜测或抢占端口。单节点手动 Smoke 可以不传节点/端口，使用 torchrun standalone。
+手动多节点运行必须显式提供 `MASTER_PORT`，不再根据 job hash 猜测或抢占端口。单节点手动 Smoke 可以不传节点/端口，使用 torchrun standalone。
 正式 CI 必须收到完整调度器端口租约和 `NODE_IPS`，缺失立即报配置错误；不能退化为 standalone 或另一套端口分配。
