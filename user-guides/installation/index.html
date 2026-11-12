@@ -54,6 +54,8 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/config_extensions/">NPU 配置扩展指南</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/context_parallel/">DeepSeek-V4 系列上下文并行：切分原理</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/lint_guide/">Lint 指南</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/low-value-ut-principles/">低价值 UT 原则</a>
@@ -71,9 +73,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/aux_loss/">辅助损失框架（AuxLoss）</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/context_parallel/">DeepSeek-V4 系列上下文并行（CP）</a>
-                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/cpu_offload/">CPU Offload - 权重与梯度 CPU 常驻，优化器状态可选 CPU/NPU 驻留面</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepep/">DeepEP - NPU MoE dispatch/combine</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepseek_v4_1_lora/">DeepSeek-V4.1 LoRA</a>
                   </li>
@@ -86,6 +88,10 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepseek_v4_tnd/">DeepSeek-V4 TND 适配</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/ep_process_group/">EP 通信域分离</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/expert_replication/">Dense 副本与专家分片</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/fsdp_compute_stream_allocation/">FSDP AllGather 缓冲区的计算流分配</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/fused_ops/">融合算子接入指南</a>
                   </li>
@@ -180,9 +186,9 @@
 <tr>
 <td>master</td>
 <td>main</td>
-<td>2.14.0(daily)</td>
-<td>2.14.0(daily)</td>
-<td>9.2.0</td>
+<td>2.14.0+cpu</td>
+<td>2.14.0 (release)</td>
+<td>9.3.0(1021)</td>
 <td>Python 3.12.x</td>
 <td>3.2.1</td>
 </tr>
@@ -243,11 +249,12 @@
 <p>注：安装 NNAL（Ascend Transformer Boost 加速库）前，请先执行 <code>source /usr/local/Ascend/cann/set_env.sh</code> 配置 CANN 环境变量。</p>
 </blockquote>
 <h3 id="2-torchtitan-npu">2. 下载 torchtitan-npu 源码</h3>
-<p><code>shell
-git clone https://gitcode.com/cann/torchtitan-npu.git</code></p>
+<pre><code class="language-shell">git clone https://gitcode.com/cann/torchtitan-npu.git
+cd torchtitan-npu
+git checkout master
+</code></pre>
 <h3 id="3-torchtitan-npu">3. 安装 torchtitan-npu</h3>
-<pre><code class="language-shell">cd torchtitan-npu
-python3 -m pip install -r requirements.txt
+<pre><code class="language-shell">python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 </code></pre>
 <h3 id="4-torchao-npu">4. 安装 torchao-npu（可选）</h3>

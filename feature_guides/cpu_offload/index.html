@@ -54,6 +54,8 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/config_extensions/">NPU 配置扩展指南</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/context_parallel/">DeepSeek-V4 系列上下文并行：切分原理</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/lint_guide/">Lint 指南</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/low-value-ut-principles/">低价值 UT 原则</a>
@@ -70,8 +72,6 @@
                   <li class="toctree-l1"><a class="reference internal" href="../anticipatory_routing/">Loss spike 检测与路由重放（Anticipatory Routing）</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../aux_loss/">辅助损失框架（AuxLoss）</a>
-                  </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../context_parallel/">DeepSeek-V4 系列上下文并行（CP）</a>
                   </li>
                   <li class="toctree-l1 current"><a class="reference internal current" href="#">CPU Offload - 权重与梯度 CPU 常驻，优化器状态可选 CPU/NPU 驻留面</a>
     <ul class="current">
@@ -95,6 +95,8 @@
     </li>
     </ul>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../deepep/">DeepEP - NPU MoE dispatch/combine</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../deepseek_v4_1_lora/">DeepSeek-V4.1 LoRA</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../deepseek_v4_graph_trainer/">DeepSeek-V4 GraphTrainer 编译路径适配</a>
@@ -106,6 +108,10 @@
                   <li class="toctree-l1"><a class="reference internal" href="../deepseek_v4_tnd/">DeepSeek-V4 TND 适配</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../ep_process_group/">EP 通信域分离</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../expert_replication/">Dense 副本与专家分片</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../fsdp_compute_stream_allocation/">FSDP AllGather 缓冲区的计算流分配</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../fused_ops/">融合算子接入指南</a>
                   </li>
@@ -225,7 +231,7 @@
 <h2 id="_4">架构</h2>
 <pre><code>--training.enable-cpu-offload
 ├── parallelize_fn → CPUOffloadPolicy → FSDPParam.offload_to_cpu = True
-│   ├── forward: unshard 时 CPU pinned 参数 → NPU（多 rank: 上游内建 / 单 rank: 本仓预取补丁）
+│   ├── forward: unshard 时 CPU pinned 参数 → NPU（多 rank 亦由本仓批量 copy-in 补丁覆盖，单 rank 走 copy-only 预取补丁）
 │   └── backward: foreach_reduce → 梯度 reduce-scatter → D2H 落 CPU pinned
 │                                    → 第二个 microbatch 起在 NPU 分块累加（本仓补丁）
 │
@@ -267,7 +273,7 @@
 </tr>
 <tr>
 <td><code>extensions/distributed/grad_accum.py</code></td>
-<td>梯度累加 + 单 rank 参数预取（FSDP 集成）</td>
+<td>梯度累加 + 参数批量 copy-in 预取（单 rank 与多 rank）与批量 D2H</td>
 </tr>
 <tr>
 <td><code>extensions/distributed/grad_clip.py</code></td>
@@ -364,8 +370,8 @@
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../context_parallel/" class="btn btn-neutral float-left" title="DeepSeek-V4 系列上下文并行（CP）"><span class="icon icon-circle-arrow-left"></span> Previous</a>
-        <a href="../deepseek_v4_1_lora/" class="btn btn-neutral float-right" title="DeepSeek-V4.1 LoRA">Next <span class="icon icon-circle-arrow-right"></span></a>
+        <a href="../aux_loss/" class="btn btn-neutral float-left" title="辅助损失框架（AuxLoss）"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../deepep/" class="btn btn-neutral float-right" title="DeepEP - NPU MoE dispatch/combine">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
   <hr/>
@@ -388,10 +394,10 @@
   <span class="rst-current-version" data-toggle="rst-current-version">
     
     
-      <span><a href="../context_parallel/" style="color: #fcfcfc">&laquo; Previous</a></span>
+      <span><a href="../aux_loss/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
-      <span><a href="../deepseek_v4_1_lora/" style="color: #fcfcfc">Next &raquo;</a></span>
+      <span><a href="../deepep/" style="color: #fcfcfc">Next &raquo;</a></span>
     
   </span>
 </div>

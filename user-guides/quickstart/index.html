@@ -54,6 +54,8 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/config_extensions/">NPU 配置扩展指南</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/context_parallel/">DeepSeek-V4 系列上下文并行：切分原理</a>
+                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/lint_guide/">Lint 指南</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../developer_guides/low-value-ut-principles/">低价值 UT 原则</a>
@@ -71,9 +73,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/aux_loss/">辅助损失框架（AuxLoss）</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/context_parallel/">DeepSeek-V4 系列上下文并行（CP）</a>
-                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/cpu_offload/">CPU Offload - 权重与梯度 CPU 常驻，优化器状态可选 CPU/NPU 驻留面</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepep/">DeepEP - NPU MoE dispatch/combine</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepseek_v4_1_lora/">DeepSeek-V4.1 LoRA</a>
                   </li>
@@ -86,6 +88,10 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepseek_v4_tnd/">DeepSeek-V4 TND 适配</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/ep_process_group/">EP 通信域分离</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/expert_replication/">Dense 副本与专家分片</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/fsdp_compute_stream_allocation/">FSDP AllGather 缓冲区的计算流分配</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/fused_ops/">融合算子接入指南</a>
                   </li>
@@ -270,13 +276,18 @@ bash examples/deepseek_v4/deepseek_v4_flash_cpt_4k_a3.sh \
 </tr>
 <tr>
 <td><code>recipe</code></td>
-<td><code>all_mxfp8</code>、<code>mix</code>、<code>all_block_fp8</code>、<code>all_hif8</code></td>
-<td>选择全 MXFP8、混合 MXFP8/Block FP8、全 Block FP8 或全 HiF8。</td>
+<td>DeepSeek: <code>all_mxfp8</code>、<code>mix</code>、<code>all_block_fp8</code>、<code>all_hif8</code>；Qwen3.5: <code>W4A8_MXFP</code>、<code>W8A8_MXFP8</code></td>
+<td>DeepSeek 选择 MXFP8/Block FP8/HiF8 recipe；Qwen3.5 两个 recipe 仅支持 dense 模型，不支持 MoE 模型或 shared experts，也不量化视觉编码器；激活为 MXFP8，<code>W4A8_MXFP</code> 权重带 MXFP4 fake quant，<code>W8A8_MXFP8</code> 权重为 Block FP8。</td>
+</tr>
+<tr>
+<td><code>all-to-all-quant-format</code></td>
+<td><code>--all-to-all-quant-format mxfp8</code></td>
+<td>默认未设置。指定 <code>mxfp8</code> 时，对标准 EP dispatcher 的正向 dispatch 和 combine 反向启用 MXFP8 token 通信。要求低精度训练和 MX 兼容 recipe，不支持 DeepEP。开启示例及限制见<a href="../../feature_guides/low_precision_training/#moe-all-to-all-低精度通信">MoE all-to-all 低精度通信</a>。</td>
 </tr>
 <tr>
 <td><code>enable-mxfp4-qat</code></td>
 <td><code>--enable-mxfp4-qat</code> / <code>--no-enable-mxfp4-qat</code></td>
-<td>为 routed expert 启用或关闭 MXFP4 QAT 约束，默认关闭。</td>
+<td>为 DeepSeek routed expert 启用或关闭 MXFP4 QAT 约束，默认关闭；Qwen3.5 <code>W4A8_MXFP</code> 的 dense 权重不依赖该开关。</td>
 </tr>
 <tr>
 <td><code>li-quantization</code></td>
@@ -296,7 +307,7 @@ bash examples/deepseek_v4/deepseek_v4_flash_cpt_4k_a3.sh \
 <tr>
 <td><code>fsdp-prequantize-fqns</code></td>
 <td>FQN 后缀模式列表（默认 <code>None</code>）</td>
-<td>仅在 <code>enable-fsdp-prequantize</code> 下生效。白名单内的权重保留预量化、其余显式关闭；<code>None</code> 用 recipe 默认白名单，显式空表与开关开启冲突会报 <code>ValueError</code>。多个模式写在同一参数内并以英文逗号分隔（如 <code>.attention.wq_b,.attention.wo_a</code>）。命中权重的分片若不满足对齐约束，运行时立即报错终止（不静默回退），并给出移除该 FQN 或调整并行度的提示。</td>
+<td>仅在 <code>enable-fsdp-prequantize</code> 下生效。白名单内的权重保留预量化、其余显式关闭；<code>None</code> 用 recipe 默认白名单，显式空表与开关开启冲突会报 <code>ValueError</code>。多个模式写在同一参数内并以英文逗号分隔（如 <code>.attention.wq_b,.attention.wo_a</code>）。命中权重的分片若不满足对齐约束，运行时立即报错终止（不静默回退）。</td>
 </tr>
 <tr>
 <td><code>enable-hif8-save-quant-codes</code></td>

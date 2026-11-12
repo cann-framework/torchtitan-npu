@@ -54,6 +54,8 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../config_extensions/">NPU 配置扩展指南</a>
                   </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../context_parallel/">DeepSeek-V4 系列上下文并行：切分原理</a>
+                  </li>
                   <li class="toctree-l1 current"><a class="reference internal current" href="#">Lint 指南</a>
     <ul class="current">
     <li class="toctree-l2"><a class="reference internal" href="#_1">检查范围</a>
@@ -95,9 +97,9 @@
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/aux_loss/">辅助损失框架（AuxLoss）</a>
                   </li>
-                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/context_parallel/">DeepSeek-V4 系列上下文并行（CP）</a>
-                  </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/cpu_offload/">CPU Offload - 权重与梯度 CPU 常驻，优化器状态可选 CPU/NPU 驻留面</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepep/">DeepEP - NPU MoE dispatch/combine</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepseek_v4_1_lora/">DeepSeek-V4.1 LoRA</a>
                   </li>
@@ -110,6 +112,10 @@
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/deepseek_v4_tnd/">DeepSeek-V4 TND 适配</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/ep_process_group/">EP 通信域分离</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/expert_replication/">Dense 副本与专家分片</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/fsdp_compute_stream_allocation/">FSDP AllGather 缓冲区的计算流分配</a>
                   </li>
                   <li class="toctree-l1"><a class="reference internal" href="../../feature_guides/fused_ops/">融合算子接入指南</a>
                   </li>
@@ -251,7 +257,7 @@ Git Bash，以便执行 OAT hook 使用的 <code>bash scripts/oat_check.sh</code
             </div>
           </div><footer>
     <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
-        <a href="../config_extensions/" class="btn btn-neutral float-left" title="NPU 配置扩展指南"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../context_parallel/" class="btn btn-neutral float-left" title="DeepSeek-V4 系列上下文并行：切分原理"><span class="icon icon-circle-arrow-left"></span> Previous</a>
         <a href="../low-value-ut-principles/" class="btn btn-neutral float-right" title="低价值 UT 原则">Next <span class="icon icon-circle-arrow-right"></span></a>
     </div>
 
@@ -275,7 +281,7 @@ Git Bash，以便执行 OAT hook 使用的 <code>bash scripts/oat_check.sh</code
   <span class="rst-current-version" data-toggle="rst-current-version">
     
     
-      <span><a href="../config_extensions/" style="color: #fcfcfc">&laquo; Previous</a></span>
+      <span><a href="../context_parallel/" style="color: #fcfcfc">&laquo; Previous</a></span>
     
     
       <span><a href="../low-value-ut-principles/" style="color: #fcfcfc">Next &raquo;</a></span>
