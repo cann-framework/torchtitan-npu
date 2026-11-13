@@ -71,6 +71,13 @@ python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 ```
 
+安装完成后，可通过以下检查确认依赖版本一致且 PyArrow 能正常导入：
+
+```shell
+python3 -m pip check
+python3 -c "import numpy, pyarrow, datasets; print(numpy.__version__, pyarrow.__version__)"
+```
+
 ### 4. 安装 torchao-npu（可选）
 
 仓库已在 `experiments/torchao-npu/torchao_npu` 中内置 TorchAO-NPU 适配代码，
