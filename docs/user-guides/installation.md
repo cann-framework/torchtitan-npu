@@ -87,7 +87,22 @@ python3 -m pip install -r requirements.txt
 python3 -m pip install -e .
 ```
 
-### 4. 安装 torchao-npu（可选）
+### 4. 验证依赖安装
+
+`requirements.txt` 通过 `triton-ascend==3.2.1` 固定 NumPy 1.26.4，并限制 `pyarrow<26`。
+PyArrow 26 在导入时要求 NumPy 2，但其 wheel 未在安装元数据中声明该要求，因此
+`pip install` 和 `pip check` 可能通过而 `import pyarrow` 失败。安装完成后执行以下检查，
+确认 NumPy、PyArrow 和 datasets 均可导入且 PyArrow 低于 26：
+
+```shell
+python3 scripts/check_install_dependencies.py
+python3 -m pip check
+python3 -c "import numpy, pyarrow, datasets; print(numpy.__version__, pyarrow.__version__)"
+```
+
+`check_install_dependencies.py` 在任一依赖导入失败或 PyArrow 版本不低于 26 时以非零状态退出。
+
+### 5. 安装 torchao-npu（可选）
 
 仓库已在 `experiments/torchao-npu/torchao_npu` 中内置 TorchAO-NPU 适配代码，
 默认无需单独克隆 `torchao-npu` 仓库。从 torchtitan-npu 仓库根目录执行：

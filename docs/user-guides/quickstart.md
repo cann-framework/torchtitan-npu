@@ -111,7 +111,7 @@ DeepSeek-V4 的 SMLA 融合路径和 TND 数据约定见 [DeepSeek-V4 TND 适配
 
 ### DeepSeek-V4 TorchAO-NPU 低精度训练
 
-先按[软件安装](./installation.md#4-安装-torchao-npu可选)安装仓内适配包，或将
+先按[软件安装](./installation.md#5-安装-torchao-npu可选)安装仓内适配包，或将
 `torchao_npu` 源码的父目录加入 `PYTHONPATH`。随后在普通训练命令后显式增加量化 CLI：
 
 > [!NOTE]
